@@ -6,24 +6,40 @@ import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.Animal;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.material.MapColor;
+import net.minecraft.world.phys.Vec3;
 import org.lwjgl.glfw.GLFW;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Deque;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -31,35 +47,42 @@ import java.util.Random;
 
 public class AssistantVadimkaClient implements ClientModInitializer {
 public static final String MOD_ID = "assistant_vadimka";
+public static final String VERSION_LABEL = "v3.0";
+
+// =========================================================================
+// ПЕРЕЧИСЛЕНИЯ МОДЕЛЕЙ, ТЕМ, ВКЛАДОК И МИНИ-ИГР
+// =========================================================================
 
 public enum VadimkaForm {
-PLAYER("Player (Мини-игрок)", "Player", EntityType.ALLAY, 0xFF38BDF8, 0xFFFDE68A),
-ALLAY("Allay (Спешик)", "Allay", EntityType.ALLAY, 0xFF22D3EE, 0xFFA5F3FC),
-BREEZE("Breeze (Вихрь)", "Breeze", EntityType.BREEZE, 0xFF818CF8, 0xFFC7D2FE),
-WARDEN("Warden (Хранитель)", "Warden", EntityType.WARDEN, 0xFF0D9488, 0xFF2DD4BF),
-AXOLOTL("Blue Axolotl (Аксолотль)", "Axolotl", EntityType.AXOLOTL, 0xFF60A5FA, 0xFFF472B6),
-RAT("Rat (Крыска)", "Крыска", EntityType.SILVERFISH, 0xFF94A3B8, 0xFFF9A8D4);
+RAT("Rat (Крыска)", "Крыска", EntityType.SILVERFISH, 1.05, 0xFF94A3B8, 0xFFF472B6),
+ALLAY("Allay (Спешик)", "Спешик", EntityType.ALLAY, 0.85, 0xFF22D3EE, 0xFFA5F3FC),
+BREEZE("Breeze (Вихрь)", "Вихрь", EntityType.BREEZE, 0.56, 0xFF818CF8, 0xFFC7D2FE),
+WARDEN("Warden (Хранитель)", "Warden", EntityType.WARDEN, 0.36, 0xFF0D9488, 0xFF2DD4BF),
+AXOLOTL("Blue Axolotl (Аксолотль)", "Аксолотль", EntityType.AXOLOTL, 0.92, 0xFF60A5FA, 0xFFF472B6),
+PLAYER("Player (Мини-игрок)", "Игрок", EntityType.ALLAY, 0.78, 0xFF38BDF8, 0xFFFDE68A);
 
 public final String title;
 public final String shortName;
 public final EntityType<? extends Mob> entityType;
+public final double baseWorldScale;
 public final int primaryColor;
 public final int accentColor;
 
-VadimkaForm(String title, String shortName, EntityType<? extends Mob> entityType, int primaryColor, int accentColor) {
+VadimkaForm(String title, String shortName, EntityType<? extends Mob> entityType, double baseWorldScale, int primaryColor, int accentColor) {
 this.title = title;
 this.shortName = shortName;
 this.entityType = entityType;
+this.baseWorldScale = baseWorldScale;
 this.primaryColor = primaryColor;
 this.accentColor = accentColor;
 }
 }
 
 public enum MinionRole {
-COLLECTOR("Сборщик", "§a[Сборщик]", 0xFF4ADE80),
-BUILDER("Строитель-подручный", "§e[Строитель]", 0xFFFACC15),
-SCOUT("Разведчик / Факельщик", "§b[Разведчик]", 0xFF38BDF8),
-SUPPLIER("Снабженец", "§d[Снабженец]", 0xFFF472B6);
+COLLECTOR("Сборщик", "§a✦ Сборщик", 0xFF4ADE80),
+BUILDER("Строитель", "§e✦ Строитель", 0xFFFACC15),
+SCOUT("Разведчик", "§b✦ Разведчик", 0xFF38BDF8),
+SUPPLIER("Снабженец", "§d✦ Снабженец", 0xFFF472B6);
 
 public final String title;
 public final String tag;
@@ -73,94 +96,191 @@ this.color = color;
 }
 
 public enum MenuTab {
-VADIMKA("1. Спутник Вадимка"),
-AUTOPILOT("2. Автопилот"),
-AUTO_BUILD("3. Авто-постройка"),
-LITEMATICA_HUD("4. Litematica HUD"),
-VISUAL_RADAR("5. Визуал и Радар"),
-CHESTS_VILLAGERS("6. Ларчики и Жители"),
-COMBAT_PVP("7. Бой и PvP"),
-MUSIC_AFK("8. Музыка и AFK"),
-CUSTOM_VISUAL("9. Кастом-визуал");
+VADIMKA("Вадимка", "Спутник Вадимка и Миньоны"),
+AUTOPILOT("Автопилот", "Автопилот и профайлер стиля"),
+AUTO_BUILD("Постройка", "Авто-постройка и база"),
+LITEMATICA_HUD("Litematica", "Litematica HUD и материалы"),
+VISUAL_RADAR("Радар", "Мини-карта, радар и разведка"),
+CHESTS_VILLAGERS("База и Лут", "Сундуки, сортировка и жители"),
+COMBAT_PVP("Бой и PvP", "Боевой HUD, тотемы и дуги"),
+MUSIC_AFK("Музыка / AFK", "Spotify HUD и MC мини-игры"),
+CUSTOM_VISUAL("Кастом", "Гардероб, крылья и дизайн [P]");
 
-public final String title;
+public final String shortTitle;
+public final String fullTitle;
 
-MenuTab(String title) {
-this.title = title;
+MenuTab(String shortTitle, String fullTitle) {
+this.shortTitle = shortTitle;
+this.fullTitle = fullTitle;
 }
 }
 
 public enum MenuTheme {
-CYBER_EMERALD("Cyber Emerald", 0xEB0A1016, 0xFF111B24, 0xFF10B981, 0xFF38BDF8),
-NETHER_CRIMSON("Nether Crimson", 0xEB150A0E, 0xFF231017, 0xFFF43F5E, 0xFFFBBF24),
-AMETHYST_VOID("Amethyst Void", 0xEB100B1C, 0xFF1C1330, 0xFFA855F7, 0xFFF472B6),
-CLASSIC_DARK("Classic Dark", 0xEB101216, 0xFF1B1E24, 0xFFE2E8F0, 0xFF94A3B8);
+CYBER_EMERALD("Cyber Emerald", 0xEE090E14, 0xFF0E1621, 0xFF131F2E, 0xFF10B981, 0xFF38BDF8, 0xFF1E3245),
+NETHER_CRIMSON("Nether Crimson", 0xEE14090D, 0xFF200E15, 0xFF2B131C, 0xFFF43F5E, 0xFFFBBF24, 0xFF471E2C),
+AMETHYST_VOID("Amethyst Void", 0xEE0F0A1A, 0xFF19112B, 0xFF24183D, 0xFFA855F7, 0xFFF472B6, 0xFF3B265E),
+ARCTIC_FROST("Arctic Frost", 0xEE09111B, 0xFF101C2B, 0xFF17273B, 0xFF38BDF8, 0xFF7DD3FC, 0xFF26405E),
+OBSIDIAN_GOLD("Obsidian Gold", 0xEE0E0D0A, 0xFF181611, 0xFF242018, 0xFFF59E0B, 0xFFFDE047, 0xFF453B24);
 
 public final String title;
-public final int bgMain;
+public final int bgWindow;
+public final int bgPanel;
 public final int bgCard;
 public final int accent;
 public final int secondary;
+public final int borderMuted;
 
-MenuTheme(String title, int bgMain, int bgCard, int accent, int secondary) {
+MenuTheme(String title, int bgWindow, int bgPanel, int bgCard, int accent, int secondary, int borderMuted) {
 this.title = title;
-this.bgMain = bgMain;
+this.bgWindow = bgWindow;
+this.bgPanel = bgPanel;
 this.bgCard = bgCard;
 this.accent = accent;
 this.secondary = secondary;
+this.borderMuted = borderMuted;
 }
 }
 
-// Состояние Вадимки и 3D-сущностей в мире
+public enum AfkGameType {
+RUNNER("MC-Раннер", "Уворот от криперов (A / D)"),
+SONIC("Рывок по холмам", "Прыжки за золотом (SPACE / W)"),
+DOOM("Данж-Шутер", "Стрельба по мобам (A / D / SPACE)");
+
+public final String title;
+public final String hint;
+
+AfkGameType(String title, String hint) {
+this.title = title;
+this.hint = hint;
+}
+}
+
+// =========================================================================
+// СОСТОЯНИЕ МОДА И НАСТРОЙКИ ВСЕХ 9 ВКЛАДОК
+// =========================================================================
+
+// 1. Вадимка и миньоны
 public static VadimkaForm currentForm = VadimkaForm.RAT;
 public static boolean companionVisibleInWorld = true;
+public static boolean minionsVisibleInWorld = true;
+public static int companionScalePercent = 100; // 60..140
 public static boolean quietMode = false;
 public static boolean randomChaosMode = false;
 public static boolean voiceCommentator = true;
 public static final Map<MinionRole, Boolean> activeMinions = new EnumMap<>(MinionRole.class);
 
-private static Mob companionEntity = null;
-private static VadimkaForm spawnedForm = null;
-private static final Map<MinionRole, Mob> minionEntities = new EnumMap<>(MinionRole.class);
-private static int worldAnimTick = 0;
-
-// Настройки остальных модулей
+// 2. Автопилот
 public static boolean styleProfiler = true;
 public static boolean safeAutopilot = false;
+public static boolean autoReturnControl = true;
+public static boolean sprintAssist = false;
+public static boolean parkourEdgeGuard = true;
+public static boolean fallDangerAlert = true;
+
+// 3. Постройка
 public static boolean litematicaAutoBuild = false;
 public static boolean smartRestoration = true;
 public static boolean hotbarAutoRefill = true;
+public static boolean redstoneInspector = true;
+public static boolean palettePreview = true;
+public static boolean rulerOverlay = false;
+
+// 4. Litematica HUD
+public static boolean litematicaHudEnabled = true;
 public static boolean shulkerScanner = true;
 public static boolean layerSliceMode = false;
+public static boolean deficitHighlight = true;
+public static int targetBuildLayerY = 64;
 
-// Радар и визуал
+// 5. Радар и разведка
 public static boolean radarHudEnabled = true;
+public static boolean radarTerrainMode = true;
 public static boolean radarRightSide = false;
+public static int radarZoomLevel = 1; // 0 = близко, 1 = средне, 2 = далеко
 public static boolean soundRadarEnabled = true;
 public static boolean ariadneThread = true;
 public static boolean sixthSense = true;
+
+// 6. База и лут
 public static boolean chestMemory = true;
 public static boolean smartSorter = false;
+public static boolean radarShowChests = true;
+public static boolean radarShowDrops = true;
+public static boolean villagerTracker = true;
+
+// 7. Бой и PvP
+public static boolean combatHudEnabled = true;
 public static boolean trajectoriesEnabled = true;
 public static boolean totemScanner = true;
-public static boolean spotifyHud = true;
-public static boolean afkPanicExit = true;
+public static boolean armorDurabilityHud = true;
+public static boolean deathReplayMarker = true;
 
-// Кастомизация персонажа и меню
+// 8. Музыка и AFK
+public static boolean spotifyHudEnabled = true;
+public static int spotifyTrackIndex = 0;
+public static boolean afkPanicExit = true;
+public static AfkGameType selectedAfkGame = AfkGameType.RUNNER;
+public static final List<String> DEMO_TRACKS = List.of(
+"C418 — Aria Math",
+"Lena Raine — Pigstep",
+"C418 — Sweden (Lo-Fi)",
+"Aaron Cherof — Precipice"
+);
+
+// 9. Кастом-визуал
 public static MenuTheme currentTheme = MenuTheme.CYBER_EMERALD;
-public static final List<String> WINGS_OPTIONS = List.of("Выкл", "Ангельские", "Демонические", "Неон-элитры");
-public static final List<String> HORNS_OPTIONS = List.of("Выкл", "Дьявольские", "Оленьи", "Кибер-рожки");
-public static final List<String> HATS_OPTIONS = List.of("Выкл", "Корона", "Ушки Крыски", "Цилиндр");
-public static final List<String> OUTFIT_OPTIONS = List.of("Стандарт", "Кибер-плащ", "Тень Ассасина", "Изумрудный сет");
-public static final List<String> CROSSHAIR_OPTIONS = List.of("Точка + Крест", "Неон-круг", "Динамический", "Ванильный");
+public static final List<String> WINGS_OPTIONS = List.of("Выкл", "Ангельские", "Демонические", "Неон-элитры", "Кристальные");
+public static final List<String> HORNS_OPTIONS = List.of("Выкл", "Дьявольские", "Оленьи", "Кибер-рожки", "Золотой нимб");
+public static final List<String> HATS_OPTIONS = List.of("Выкл", "Корона", "Ушки Крыски", "Цилиндр", "Наушники");
+public static final List<String> OUTFIT_OPTIONS = List.of("Стандарт", "Кибер-плащ", "Тень Ассасина", "Изумрудный сет", "Незерит Неон");
+public static final List<String> CROSSHAIR_OPTIONS = List.of("Ванильный", "Точка + Крест", "Неон-круг", "Тактический");
 
 public static int wingsIndex = 1;
 public static int hornsIndex = 1;
 public static int hatsIndex = 2;
 public static int outfitIndex = 1;
-public static int crosshairIndex = 0;
+public static int crosshairIndex = 1;
+public static boolean worldCosmeticsParticles = true;
+
+// =========================================================================
+// ВНУТРЕННЕЕ СОСТОЯНИЕ МИРА, РАДАРА, ХЛЕБНЫХ КРОШЕК И РЕПЛИК ВАДИМКИ
+// =========================================================================
 
 private static KeyMapping openMenuKey;
+private static Mob companionEntity = null;
+private static VadimkaForm spawnedForm = null;
+private static int spawnedScalePercent = -1;
+private static final Map<MinionRole, Mob> minionEntities = new EnumMap<>(MinionRole.class);
+private static int worldTick = 0;
+
+// Кэш реальной карты местности для радара
+private static final int MAP_GRID = 44;
+private static final int[] terrainColors = new int[MAP_GRID * MAP_GRID];
+private static int cachedMapCenterX = Integer.MIN_VALUE;
+private static int cachedMapCenterZ = Integer.MIN_VALUE;
+private static int cachedMapZoom = -1;
+private static int mapRefreshTicks = 0;
+
+// Нить Ариадны (история пути)
+private static final Deque<Vec3> breadcrumbs = new ArrayDeque<>();
+private static Vec3 lastBreadcrumb = null;
+
+// Угрозы и реплики Вадимки
+private static boolean threatBehindPlayer = false;
+private static double nearestHostileDist = 999.0;
+private static double nearestHostileAngle = 0.0;
+private static String vadimkaToastText = "";
+private static int vadimkaToastTicks = 0;
+private static float lastPlayerHealth = 20.0F;
+private static final Random worldRandom = new Random();
+
+private static final List<String> CHAOS_QUOTES = List.of(
+"Писк! Пора копать алмазы на Y = -58!",
+"Миньоны готовы, ждём команду босса!",
+"Осторожно, криперы любят тишину...",
+"Крысиная разведка докладывает: всё чисто!",
+"Загляни в меню [P] — там новые крылья!"
+);
 
 @Override
 public void onInitializeClient() {
@@ -177,6 +297,8 @@ KeyMapping.Category.MISC
 ClientTickEvents.END_CLIENT_TICK.register(client -> {
 if (client.player == null || client.level == null) {
 cleanupWorldEntities();
+breadcrumbs.clear();
+lastBreadcrumb = null;
 return;
 }
 while (openMenuKey.consumeClick()) {
@@ -186,10 +308,18 @@ client.setScreen(null);
 client.setScreen(new AssistantVadimkaScreen(MenuTab.VADIMKA));
 }
 }
-updateCompanionAndMinionsInWorld(client);
+tickWorldSystems(client);
 });
 
-HudRenderCallback.EVENT.register((graphics, tickCounter) -> renderRadarHud(graphics));
+HudRenderCallback.EVENT.register((graphics, tickCounter) -> renderAllHudWidgets(graphics));
+}
+
+private static void pushVadimkaToast(String text, int durationTicks) {
+if (quietMode) {
+return;
+}
+vadimkaToastText = text;
+vadimkaToastTicks = durationTicks;
 }
 
 private static void cleanupWorldEntities() {
@@ -206,15 +336,90 @@ minion.discard();
 minionEntities.clear();
 }
 
-private static void updateCompanionAndMinionsInWorld(Minecraft mc) {
+// =========================================================================
+// ИГРОВОЙ ТИК: 3D ВАДИМКА, МИНЬОНЫ, КОСМЕТИКА В МИРЕ, НИТЬ АРИАДНЫ, УГРОЗЫ
+// =========================================================================
+
+private static void tickWorldSystems(Minecraft mc) {
 ClientLevel level = mc.level;
 Player player = mc.player;
 if (level == null || player == null) {
 return;
 }
-worldAnimTick++;
+worldTick++;
+if (vadimkaToastTicks > 0) {
+vadimkaToastTicks--;
+}
 
-// 1. Обновляем 3D-спутника Вадимку в мире
+// Проверка урона для тревоги и комментатора
+float hp = player.getHealth();
+if (hp < lastPlayerHealth - 0.1F) {
+if (voiceCommentator) {
+pushVadimkaToast("Вадимка: Ты получил урон! ХП: " + (int) Math.ceil(hp), 70);
+}
+if (afkPanicExit && mc.screen instanceof AssistantVadimkaScreen scr && scr.afkGameRunning) {
+scr.afkGameRunning = false;
+mc.setScreen(null);
+pushVadimkaToast("Вадимка: ЭКСТРЕННЫЙ ВЫХОД ИЗ AFK!", 80);
+}
+}
+lastPlayerHealth = hp;
+
+// Случайные реплики в режиме рандомной дичи
+if (randomChaosMode && !quietMode && worldTick % 600 == 0) {
+pushVadimkaToast("Вадимка: " + CHAOS_QUOTES.get(worldRandom.nextInt(CHAOS_QUOTES.size())), 90);
+}
+
+// 1. Обновление 3D-спутника Вадимки и миньонов
+updateCompanionAndMinions(level, player);
+
+// 2. Видимая 3D-косметика (крылья, рога/нимб, аура) на игроке в мире
+if (worldCosmeticsParticles && worldTick % 2 == 0) {
+spawnPlayerCosmeticParticles(level, player);
+}
+
+// 3. Нить Ариадны (запись пути и направляющие частицы)
+if (ariadneThread) {
+Vec3 pos = new Vec3(player.getX(), player.getY() + 0.25, player.getZ());
+if (lastBreadcrumb == null || lastBreadcrumb.distanceToSqr(pos) > 9.0) {
+breadcrumbs.addLast(pos);
+lastBreadcrumb = pos;
+while (breadcrumbs.size() > 36) {
+breadcrumbs.removeFirst();
+}
+}
+if (worldTick % 8 == 0) {
+int idx = 0;
+for (Vec3 crumb : breadcrumbs) {
+if ((idx + worldTick / 8) % 3 == 0 && crumb.distanceToSqr(pos) < 400.0) {
+level.addParticle(ParticleTypes.ENCHANT, crumb.x, crumb.y + 0.15, crumb.z, 0.0, 0.02, 0.0);
+}
+idx++;
+}
+}
+}
+
+// 4. Шестое чувство и сканирование ближайших врагов
+scanThreats(level, player);
+if (afkPanicExit && nearestHostileDist < 4.5 && mc.screen instanceof AssistantVadimkaScreen scr && scr.afkGameRunning) {
+scr.afkGameRunning = false;
+mc.setScreen(null);
+pushVadimkaToast("Вадимка: Моб рядом! AFK-игра остановлена!", 80);
+}
+
+// 5. Обновление кэша реального рельефа для мини-карты
+if (radarHudEnabled && radarTerrainMode) {
+mapRefreshTicks++;
+int px = Mth.floor(player.getX());
+int pz = Mth.floor(player.getZ());
+if (mapRefreshTicks >= 6 || Math.abs(px - cachedMapCenterX) >= 2 || Math.abs(pz - cachedMapCenterZ) >= 2 || cachedMapZoom != radarZoomLevel) {
+refreshTerrainMapCache(level, px, pz);
+mapRefreshTicks = 0;
+}
+}
+}
+
+private static void updateCompanionAndMinions(ClientLevel level, Player player) {
 if (!companionVisibleInWorld) {
 if (companionEntity != null) {
 companionEntity.discard();
@@ -222,7 +427,8 @@ companionEntity = null;
 spawnedForm = null;
 }
 } else {
-if (companionEntity == null || companionEntity.isRemoved() || companionEntity.level() != level || spawnedForm != currentForm) {
+boolean needsRespawn = companionEntity == null || companionEntity.isRemoved() || companionEntity.level() != level || spawnedForm != currentForm;
+if (needsRespawn) {
 if (companionEntity != null) {
 companionEntity.discard();
 }
@@ -235,24 +441,27 @@ created.setSilent(true);
 created.setInvulnerable(true);
 created.setCustomName(Component.literal("§b✦ Вадимка §7[" + currentForm.shortName + "]"));
 created.setCustomNameVisible(true);
-double startX = player.getX() + 1.2;
-double startY = player.getY() + 1.1;
-double startZ = player.getZ() + 1.2;
-created.setPos(startX, startY, startZ);
+applyEntityScale(created, currentForm.baseWorldScale * (companionScalePercent / 100.0));
+created.setPos(player.getX() + 1.1, player.getY() + 1.0, player.getZ() + 1.1);
 level.addEntity(created);
 companionEntity = created;
 spawnedForm = currentForm;
+spawnedScalePercent = companionScalePercent;
+pushVadimkaToast("Вадимка сменил облик: " + currentForm.shortName, 60);
 }
+} else if (spawnedScalePercent != companionScalePercent) {
+applyEntityScale(companionEntity, currentForm.baseWorldScale * (companionScalePercent / 100.0));
+spawnedScalePercent = companionScalePercent;
 }
 
 if (companionEntity != null) {
 double yawRad = Math.toRadians(player.getYRot());
-double sideOffset = 1.15;
-double backOffset = 0.65;
+double sideOffset = 1.18;
+double backOffset = 0.72;
 double targetX = player.getX() - Math.cos(yawRad) * sideOffset + Math.sin(yawRad) * backOffset;
 double targetZ = player.getZ() - Math.sin(yawRad) * sideOffset - Math.cos(yawRad) * backOffset;
-double baseHeight = (currentForm == VadimkaForm.RAT) ? 0.15 : 1.15;
-double bob = Math.sin(worldAnimTick * 0.14) * 0.12;
+double baseHeight = (currentForm == VadimkaForm.RAT || currentForm == VadimkaForm.AXOLOTL) ? 0.12 : 1.05;
+double bob = (currentForm == VadimkaForm.RAT) ? Math.abs(Math.sin(worldTick * 0.25)) * 0.08 : Math.sin(worldTick * 0.12) * 0.12;
 double targetY = player.getY() + baseHeight + bob;
 
 companionEntity.xo = companionEntity.getX();
@@ -269,17 +478,17 @@ companionEntity.setYRot(lookYaw);
 companionEntity.setYHeadRot(lookYaw);
 companionEntity.setYBodyRot(lookYaw);
 
-if (worldAnimTick % 12 == 0) {
-level.addParticle(ParticleTypes.END_ROD, nextX, nextY + 0.35, nextZ, 0.0, 0.01, 0.0);
+if (worldTick % 14 == 0) {
+level.addParticle(ParticleTypes.END_ROD, nextX, nextY + 0.35, nextZ, 0.0, 0.015, 0.0);
 }
 }
 }
 
-// 2. Обновляем 4 мини-миньонов вокруг игрока
+// Обновление 4 миньонов
 MinionRole[] roles = MinionRole.values();
 for (int i = 0; i < roles.length; i++) {
 MinionRole role = roles[i];
-boolean enabled = companionVisibleInWorld && Boolean.TRUE.equals(activeMinions.get(role));
+boolean enabled = companionVisibleInWorld && minionsVisibleInWorld && Boolean.TRUE.equals(activeMinions.get(role));
 Mob existing = minionEntities.get(role);
 
 if (!enabled) {
@@ -303,6 +512,7 @@ minion.setSilent(true);
 minion.setInvulnerable(true);
 minion.setCustomName(Component.literal(role.tag));
 minion.setCustomNameVisible(true);
+applyEntityScale(minion, 0.62);
 minion.setPos(player.getX(), player.getY() + 1.5, player.getZ());
 level.addEntity(minion);
 minionEntities.put(role, minion);
@@ -311,16 +521,16 @@ existing = minion;
 }
 
 if (existing != null) {
-double angle = (worldAnimTick * 0.04) + (i * (Math.PI / 2.0));
-double radius = 2.05;
+double angle = (worldTick * 0.038) + (i * (Math.PI / 2.0));
+double radius = 2.15;
 double tx = player.getX() + Math.cos(angle) * radius;
 double tz = player.getZ() + Math.sin(angle) * radius;
-double ty = player.getY() + 1.45 + Math.sin(worldAnimTick * 0.12 + i) * 0.16;
+double ty = player.getY() + 1.48 + Math.sin(worldTick * 0.11 + i * 1.4) * 0.18;
 
 existing.xo = existing.getX();
 existing.yo = existing.getY();
 existing.zo = existing.getZ();
-existing.setPos(Mth.lerp(0.2, existing.getX(), tx), Mth.lerp(0.2, existing.getY(), ty), Mth.lerp(0.2, existing.getZ(), tz));
+existing.setPos(Mth.lerp(0.18, existing.getX(), tx), Mth.lerp(0.18, existing.getY(), ty), Mth.lerp(0.18, existing.getZ(), tz));
 
 float mYaw = (float) (Mth.atan2(player.getZ() - existing.getZ(), player.getX() - existing.getX()) * (180.0 / Math.PI)) - 90.0F;
 existing.setYRot(mYaw);
@@ -330,108 +540,802 @@ existing.setYBodyRot(mYaw);
 }
 }
 
-private static void renderRadarHud(GuiGraphics graphics) {
-if (!radarHudEnabled) {
-return;
+private static void applyEntityScale(Mob mob, double scale) {
+AttributeInstance attr = mob.getAttribute(Attributes.SCALE);
+if (attr != null) {
+attr.setBaseValue(Mth.clamp(scale, 0.25, 2.0));
 }
+}
+
+private static void spawnPlayerCosmeticParticles(ClientLevel level, Player player) {
+double yawRad = Math.toRadians(player.getYRot());
+double backX = Math.sin(yawRad);
+double backZ = -Math.cos(yawRad);
+double rightX = -Math.cos(yawRad);
+double rightZ = -Math.sin(yawRad);
+
+// 3D-крылья за спиной игрока
+if (wingsIndex > 0) {
+var wingParticle = switch (wingsIndex) {
+case 1 -> ParticleTypes.SNOWFLAKE;
+case 2 -> ParticleTypes.FLAME;
+case 3 -> ParticleTypes.SOUL_FIRE_FLAME;
+default -> ParticleTypes.ELECTRIC_SPARK;
+};
+double flap = Math.sin(worldTick * 0.22) * 0.14;
+for (int side = -1; side <= 1; side += 2) {
+for (int step = 1; step <= 3; step++) {
+double spread = 0.28 * step;
+double up = 1.05 + (step == 2 ? 0.28 : (step == 3 ? 0.15 : 0.05)) + flap * step;
+double back = 0.34 + 0.12 * step;
+double px = player.getX() + backX * back + rightX * (side * spread);
+double py = player.getY() + up;
+double pz = player.getZ() + backZ * back + rightZ * (side * spread);
+if ((worldTick + step) % 4 == 0) {
+level.addParticle(wingParticle, px, py, pz, 0.0, 0.0, 0.0);
+}
+}
+}
+}
+
+// Рога / Золотой нимб над головой
+if (hornsIndex == 4 && worldTick % 4 == 0) {
+double ang = (worldTick * 0.35) % (Math.PI * 2.0);
+double hx = player.getX() + Math.cos(ang) * 0.35;
+double hz = player.getZ() + Math.sin(ang) * 0.35;
+level.addParticle(ParticleTypes.END_ROD, hx, player.getY() + 2.15, hz, 0.0, 0.0, 0.0);
+} else if (hornsIndex > 0 && worldTick % 6 == 0) {
+var hornP = hornsIndex == 1 ? ParticleTypes.FLAME : ParticleTypes.ELECTRIC_SPARK;
+for (int side = -1; side <= 1; side += 2) {
+double hx = player.getX() + rightX * (side * 0.24);
+double hz = player.getZ() + rightZ * (side * 0.24);
+level.addParticle(hornP, hx, player.getY() + 2.02, hz, 0.0, 0.01, 0.0);
+}
+}
+}
+
+private static void scanThreats(ClientLevel level, Player player) {
+threatBehindPlayer = false;
+nearestHostileDist = 999.0;
+double lookX = -Math.sin(Math.toRadians(player.getYRot()));
+double lookZ = Math.cos(Math.toRadians(player.getYRot()));
+
+for (Entity entity : level.entitiesForRendering()) {
+if (!(entity instanceof Monster) || entity.getId() <= -77000) {
+continue;
+}
+double dx = entity.getX() - player.getX();
+double dz = entity.getZ() - player.getZ();
+double dy = Math.abs(entity.getY() - player.getY());
+if (dy > 8.0) {
+continue;
+}
+double dist = Math.sqrt(dx * dx + dz * dz);
+if (dist < nearestHostileDist) {
+nearestHostileDist = dist;
+nearestHostileAngle = Math.atan2(dz, dx);
+}
+if (dist < 10.0 && dist > 0.1) {
+double dot = (dx / dist) * lookX + (dz / dist) * lookZ;
+if (dot < -0.25) {
+threatBehindPlayer = true;
+}
+}
+}
+}
+
+private static void refreshTerrainMapCache(ClientLevel level, int centerX, int centerZ) {
+cachedMapCenterX = centerX;
+cachedMapCenterZ = centerZ;
+cachedMapZoom = radarZoomLevel;
+
+int stepBlocks = radarZoomLevel == 0 ? 1 : (radarZoomLevel == 1 ? 2 : 3);
+int half = MAP_GRID / 2;
+BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+
+for (int gz = 0; gz < MAP_GRID; gz++) {
+int wz = centerZ + (gz - half) * stepBlocks;
+for (int gx = 0; gx < MAP_GRID; gx++) {
+int wx = centerX + (gx - half) * stepBlocks;
+int topY = level.getHeight(Heightmap.Types.WORLD_SURFACE, wx, wz) - 1;
+int rgb = 0x16202B;
+for (int checkY = topY; checkY >= topY - 4; checkY--) {
+pos.set(wx, checkY, wz);
+BlockState state = level.getBlockState(pos);
+MapColor mapColor = state.getMapColor(level, pos);
+if (mapColor.col != 0) {
+rgb = mapColor.col;
+// Лёгкое затенение рельефа по высоте
+int northY = level.getHeight(Heightmap.Types.WORLD_SURFACE, wx, wz - stepBlocks) - 1;
+int shade = 0;
+if (checkY > northY) {
+shade = 16;
+} else if (checkY < northY) {
+shade = -18;
+}
+rgb = adjustBrightness(rgb, shade);
+break;
+}
+}
+terrainColors[gz * MAP_GRID + gx] = 0xFF000000 | rgb;
+}
+}
+}
+
+// =========================================================================
+// ИГРОВОЙ HUD: МИНИ-КАРТА С РЕЛЬЕФОМ, ПРИЦЕЛ, PVP, LITEMATICA, SPOTIFY
+// =========================================================================
+
+private static void renderAllHudWidgets(GuiGraphics graphics) {
 Minecraft mc = Minecraft.getInstance();
 if (mc.player == null || mc.level == null || mc.options.hideGui) {
 return;
 }
+int sw = mc.getWindow().getGuiScaledWidth();
+int sh = mc.getWindow().getGuiScaledHeight();
 
-int size = 86;
-int x = radarRightSide ? (mc.getWindow().getGuiScaledWidth() - size - 10) : 10;
-// Сдвинули вниз на y = 32, чтобы не перекрывать верхнюю строку FPS и XYZ!
-int y = 32;
-int centerX = x + size / 2;
-int centerY = y + size / 2;
+if (radarHudEnabled) {
+renderMinimapRadarHud(graphics, mc, sw);
+}
+if (crosshairIndex > 0 && mc.screen == null) {
+renderCustomCrosshair(graphics, sw, sh);
+}
+if (combatHudEnabled) {
+renderCombatSurvivalHud(graphics, mc, sw, sh);
+}
+if (litematicaHudEnabled) {
+renderLitematicaMiniHud(graphics, mc, sw);
+}
+if (spotifyHudEnabled) {
+renderSpotifyMiniHud(graphics, mc, sw, sh);
+}
+if (sixthSense && threatBehindPlayer) {
+String warn = "⚠ ОПАСНОСТЬ СЗАДИ (" + String.format("%.1f", nearestHostileDist) + "м)";
+int ww = mc.font.width(warn) + 16;
+int wx = (sw - ww) / 2;
+int wy = 14;
+fillRoundedRect(graphics, wx, wy, ww, 18, 0xD93B0A12);
+drawRoundedBorder(graphics, wx, wy, ww, 18, 0xFFEF4444);
+graphics.drawString(mc.font, warn, wx + 8, wy + 5, 0xFFFCA5A5);
+}
+if (vadimkaToastTicks > 0 && !vadimkaToastText.isEmpty()) {
+int tw = mc.font.width(vadimkaToastText) + 18;
+int tx = (sw - tw) / 2;
+int ty = sh - 58;
+fillRoundedRect(graphics, tx, ty, tw, 18, currentTheme.bgWindow);
+drawRoundedBorder(graphics, tx, ty, tw, 18, currentTheme.accent);
+graphics.drawString(mc.font, vadimkaToastText, tx + 9, ty + 5, 0xFFF8FAFC);
+}
+}
 
-graphics.fill(x, y, x + size, y + size, currentTheme.bgMain);
-drawBorder(graphics, x, y, size, size, currentTheme.accent);
+private static void renderMinimapRadarHud(GuiGraphics graphics, Minecraft mc, int screenW) {
+int mapSize = 104;
+int pad = 8;
+int x = radarRightSide ? (screenW - mapSize - pad) : pad;
+int y = 32; // Ниже строки FPS и координат
+int cx = x + mapSize / 2;
+int cy = y + mapSize / 2;
 
-graphics.fill(centerX, y + 4, centerX + 1, y + size - 4, 0x2AFFFFFF);
-graphics.fill(x + 4, centerY, x + size - 4, centerY + 1, 0x2AFFFFFF);
+// Внешняя стеклянная рамка
+fillRoundedRect(graphics, x - 2, y - 2, mapSize + 4, mapSize + 4, currentTheme.bgWindow);
+drawRoundedBorder(graphics, x - 2, y - 2, mapSize + 4, mapSize + 4, currentTheme.accent);
 
 double yawRad = Math.toRadians(mc.player.getYRot() + 180.0);
 double cos = Math.cos(yawRad);
 double sin = Math.sin(yawRad);
-double scale = 0.7;
-int maxOffset = (size / 2) - 6;
+int stepBlocks = radarZoomLevel == 0 ? 1 : (radarZoomLevel == 1 ? 2 : 3);
+int halfGrid = MAP_GRID / 2;
 
-int northX = centerX + (int) (-sin * (maxOffset - 2));
-int northY = centerY + (int) (-cos * (maxOffset - 2));
-graphics.drawString(mc.font, "N", northX - 2, northY - 3, currentTheme.secondary);
+if (radarTerrainMode) {
+// Отрисовка реальной местности с поворотом по направлению камеры
+int cell = 2;
+int count = mapSize / cell;
+for (int py = 0; py < count; py++) {
+double relY = (py - count / 2.0) * 0.9;
+for (int px = 0; px < count; px++) {
+double relX = (px - count / 2.0) * 0.9;
+double worldDx = relX * cos + relY * sin;
+double worldDz = -relX * sin + relY * cos;
+int gx = halfGrid + (int) Math.round(worldDx);
+int gz = halfGrid + (int) Math.round(worldDz);
+int col = 0xFF0E1520;
+if (gx >= 0 && gx < MAP_GRID && gz >= 0 && gz < MAP_GRID) {
+col = terrainColors[gz * MAP_GRID + gx];
+}
+graphics.fill(x + px * cell, y + py * cell, x + px * cell + cell, y + py * cell + cell, col);
+}
+}
+// Лёгкая тёмная виньетка сверху для контраста меток
+graphics.fill(x, y, x + mapSize, y + mapSize, 0x26080D14);
+} else {
+graphics.fill(x, y, x + mapSize, y + mapSize, 0xEE0A1018);
+}
 
+// Тонкое перекрестие радара
+graphics.fill(cx, y + 3, cx + 1, y + mapSize - 3, 0x33FFFFFF);
+graphics.fill(x + 3, cy, x + mapSize - 3, cy + 1, 0x33FFFFFF);
+
+double mapScale = 1.0 / (stepBlocks * 0.52);
+int maxOff = (mapSize / 2) - 5;
+
+// Звуковой радар: красная дуга по краю при близком монстре
+if (soundRadarEnabled && nearestHostileDist < 22.0) {
+double hDx = Math.cos(nearestHostileAngle) * 20.0;
+double hDz = Math.sin(nearestHostileAngle) * 20.0;
+double rX = hDx * cos - hDz * sin;
+double rY = hDx * sin + hDz * cos;
+double len = Math.max(1.0, Math.sqrt(rX * rX + rY * rY));
+int ax = cx + (int) ((rX / len) * (maxOff + 2));
+int ay = cy + (int) ((rY / len) * (maxOff + 2));
+graphics.fill(ax - 3, ay - 3, ax + 4, ay + 4, 0xAAEF4444);
+}
+
+// Сущности вокруг игрока
 for (Entity entity : mc.level.entitiesForRendering()) {
 if (entity == mc.player || entity.getId() <= -77000) {
 continue;
 }
 double dx = entity.getX() - mc.player.getX();
 double dz = entity.getZ() - mc.player.getZ();
-if (Math.abs(dx) > 60 || Math.abs(dz) > 60) {
+double rotX = (dx * cos - dz * sin) * mapScale;
+double rotY = (dx * sin + dz * cos) * mapScale;
+if (Math.abs(rotX) > maxOff || Math.abs(rotY) > maxOff) {
 continue;
 }
-
-double rotX = (dx * cos - dz * sin) * scale;
-double rotY = (dx * sin + dz * cos) * scale;
-int dotX = centerX + (int) Math.max(-maxOffset, Math.min(maxOffset, rotX));
-int dotY = centerY + (int) Math.max(-maxOffset, Math.min(maxOffset, rotY));
+int dotX = cx + (int) rotX;
+int dotY = cy + (int) rotY;
 
 if (entity instanceof Player otherPlayer) {
-graphics.fill(dotX - 2, dotY - 2, dotX + 2, dotY + 2, 0xFF38BDF8);
-graphics.drawString(mc.font, otherPlayer.getName().getString(), dotX + 3, dotY - 3, 0xFFE0F2FE);
+graphics.fill(dotX - 2, dotY - 2, dotX + 3, dotY + 3, 0xFF000000);
+graphics.fill(dotX - 1, dotY - 1, dotX + 2, dotY + 2, 0xFF38BDF8);
+String nick = trimText(mc.font, otherPlayer.getName().getString(), 48);
+graphics.drawString(mc.font, nick, dotX + 4, dotY - 3, 0xFFE0F2FE);
 } else if (entity instanceof Monster) {
-graphics.fill(dotX - 1, dotY - 1, dotX + 2, dotY + 2, 0xFFEF4444);
+graphics.fill(dotX - 2, dotY - 2, dotX + 2, dotY + 2, 0xAA000000);
+graphics.fill(dotX - 1, dotY - 1, dotX + 1, dotY + 1, 0xFFEF4444);
 } else if (entity instanceof Animal) {
 graphics.fill(dotX - 1, dotY - 1, dotX + 2, dotY + 2, 0xFF4ADE80);
+} else if (radarShowDrops && entity instanceof ItemEntity) {
+graphics.fill(dotX - 1, dotY - 1, dotX + 1, dotY + 1, 0xFFFACC15);
 }
 }
 
-graphics.fill(centerX - 2, centerY - 2, centerX + 2, centerY + 2, 0xFFFFFFFF);
+// Индикатор Севера (N) и сторон света по краю карты
+drawCompassLetter(graphics, mc.font, "N", cx, cy, -sin, -cos, maxOff - 1, 0xFF38BDF8);
+drawCompassLetter(graphics, mc.font, "S", cx, cy, sin, cos, maxOff - 1, 0xFF94A3B8);
+drawCompassLetter(graphics, mc.font, "E", cx, cy, cos, -sin, maxOff - 1, 0xFF94A3B8);
+drawCompassLetter(graphics, mc.font, "W", cx, cy, -cos, sin, maxOff - 1, 0xFF94A3B8);
 
-int infoY = y + size + 3;
-graphics.fill(x, infoY, x + size, infoY + 23, currentTheme.bgMain);
-drawBorder(graphics, x, infoY, size, 23, currentTheme.secondary);
+// Стрелка игрока в центре
+graphics.fill(cx - 2, cy - 2, cx + 3, cy + 3, 0xFF000000);
+graphics.fill(cx - 1, cy - 1, cx + 2, cy + 2, 0xFFFFFFFF);
+graphics.fill(cx, cy - 3, cx + 1, cy - 1, currentTheme.accent);
 
-String coords = (int) mc.player.getX() + " / " + (int) mc.player.getY() + " / " + (int) mc.player.getZ();
-graphics.drawString(mc.font, coords, x + 4, infoY + 3, 0xFFE2E8F0);
-graphics.drawString(mc.font, "Вадимка: " + currentForm.shortName, x + 4, infoY + 13, currentTheme.accent);
+// Нижняя информационная плашка (ровно по ширине карты, без вылезания текста!)
+int infoY = y + mapSize + 5;
+int infoW = mapSize + 4;
+int infoH = 30;
+fillRoundedRect(graphics, x - 2, infoY, infoW, infoH, currentTheme.bgWindow);
+drawRoundedBorder(graphics, x - 2, infoY, infoW, infoH, currentTheme.secondary);
+
+String coords = (int) mc.player.getX() + " " + (int) mc.player.getY() + " " + (int) mc.player.getZ();
+String dir = getCompassDirection(mc.player.getYRot());
+String line1 = trimText(mc.font, coords + " [" + dir + "]", infoW - 8);
+String line2 = trimText(mc.font, "✦ " + currentForm.shortName + (quietMode ? " (Тих)" : ""), infoW - 8);
+graphics.drawString(mc.font, line1, x + 2, infoY + 5, 0xFFF1F5F9);
+graphics.drawString(mc.font, line2, x + 2, infoY + 17, currentTheme.accent);
 }
 
-private static void drawBorder(GuiGraphics graphics, int x, int y, int w, int h, int color) {
-graphics.fill(x, y, x + w, y + 1, color);
-graphics.fill(x, y + h - 1, x + w, y + h, color);
-graphics.fill(x, y, x + 1, y + h, color);
-graphics.fill(x + w - 1, y, x + w, y + h, color);
+private static void drawCompassLetter(GuiGraphics g, Font font, String letter, int cx, int cy, double dx, double dy, int rad, int color) {
+int lx = cx + (int) (dx * rad) - 2;
+int ly = cy + (int) (dy * rad) - 3;
+g.fill(lx - 1, ly - 1, lx + 7, ly + 8, 0xAA080D14);
+g.drawString(font, letter, lx, ly, color);
 }
+
+private static String getCompassDirection(float yaw) {
+float norm = ((yaw % 360.0F) + 360.0F) % 360.0F;
+if (norm >= 337.5 || norm < 22.5) return "S";
+if (norm < 67.5) return "SW";
+if (norm < 112.5) return "W";
+if (norm < 157.5) return "NW";
+if (norm < 202.5) return "N";
+if (norm < 247.5) return "NE";
+if (norm < 292.5) return "E";
+return "SE";
+}
+
+private static void renderCustomCrosshair(GuiGraphics g, int sw, int sh) {
+int cx = sw / 2;
+int cy = sh / 2;
+int col = currentTheme.accent;
+if (crosshairIndex == 1) {
+// Точка + Крест
+g.fill(cx - 1, cy - 1, cx + 1, cy + 1, 0xFFFFFFFF);
+g.fill(cx - 6, cy, cx - 2, cy + 1, col);
+g.fill(cx + 2, cy, cx + 6, cy + 1, col);
+g.fill(cx, cy - 6, cx + 1, cy - 2, col);
+g.fill(cx, cy + 2, cx + 1, cy + 6, col);
+} else if (crosshairIndex == 2) {
+// Неон-круг
+drawRoundedBorder(g, cx - 5, cy - 5, 11, 11, col);
+g.fill(cx, cy, cx + 1, cy + 1, 0xFFFFFFFF);
+} else if (crosshairIndex == 3) {
+// Тактический
+g.fill(cx - 7, cy, cx - 3, cy + 1, currentTheme.secondary);
+g.fill(cx + 4, cy, cx + 8, cy + 1, currentTheme.secondary);
+g.fill(cx, cy + 3, cx + 1, cy + 7, currentTheme.secondary);
+g.fill(cx, cy, cx + 1, cy + 1, col);
+}
+}
+
+private static void renderCombatSurvivalHud(GuiGraphics g, Minecraft mc, int sw, int sh) {
+Player p = mc.player;
+if (p == null) return;
+int totems = 0;
+for (int i = 0; i < p.getInventory().getContainerSize(); i++) {
+ItemStack st = p.getInventory().getItem(i);
+if (https://www.google.com/url?q=http://st.is&source=gmail&ust=1795793003708000&sa=E(Items.TOTEM_OF_UNDYING)) {
+totems += st.getCount();
+}
+}
+if (p.getOffhandItem().is(Items.TOTEM_OF_UNDYING)) {
+totems += p.getOffhandItem().getCount();
+}
+
+int w = 114;
+int h = armorDurabilityHud ? 44 : 22;
+int x = sw - w - 8;
+int y = sh - h - 8;
+fillRoundedRect(g, x, y, w, h, currentTheme.bgWindow);
+drawRoundedBorder(g, x, y, w, h, currentTheme.borderMuted);
+
+String tText = "Тотемы: " + totems + " | HP: " + (int) Math.ceil(p.getHealth());
+g.drawString(mc.font, trimText(mc.font, tText, w - 10), x + 6, y + 6, totems > 0 ? 0xFFFDE047 : 0xFFE2E8F0);
+
+if (armorDurabilityHud) {
+EquipmentSlot[] slots = {EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
+String[] labels = {"Ш", "Н", "П", "Б"};
+int bx = x + 6;
+int by = y + 20;
+for (int i = 0; i < slots.length; i++) {
+ItemStack armor = p.getItemBySlot(slots[i]);
+int pct = 0;
+if (!armor.isEmpty() && armor.isDamageableItem() && armor.getMaxDamage() > 0) {
+pct = (int) Math.round(((armor.getMaxDamage() - armor.getDamageValue()) * 100.0) / armor.getMaxDamage());
+} else if (!armor.isEmpty()) {
+pct = 100;
+}
+int barCol = pct > 55 ? 0xFF4ADE80 : (pct > 25 ? 0xFFFACC15 : (pct > 0 ? 0xFFEF4444 : 0xFF334155));
+g.drawString(mc.font, labels[i], bx + i * 26, by, 0xFF94A3B8);
+g.fill(bx + i * 26, by + 11, bx + i * 26 + 21, by + 15, 0xFF1E293B);
+if (pct > 0) {
+int fillW = Math.max(2, (21 * pct) / 100);
+g.fill(bx + i * 26, by + 11, bx + i * 26 + fillW, by + 15, barCol);
+}
+}
+}
+}
+
+private static void renderLitematicaMiniHud(GuiGraphics g, Minecraft mc, int sw) {
+Player p = mc.player;
+if (p == null) return;
+ItemStack hand = p.getMainHandItem();
+if (hand.isEmpty() && !layerSliceMode) {
+return;
+}
+int totalInInv = 0;
+if (!hand.isEmpty()) {
+for (int i = 0; i < p.getInventory().getContainerSize(); i++) {
+ItemStack st = p.getInventory().getItem(i);
+if (!st.isEmpty() && st.getItem() == hand.getItem()) {
+totalInInv += st.getCount();
+}
+}
+}
+int w = 134;
+int h = 30;
+int x = radarRightSide ? 8 : (sw - w - 8);
+int y = 32;
+fillRoundedRect(g, x, y, w, h, currentTheme.bgWindow);
+drawRoundedBorder(g, x, y, w, h, currentTheme.borderMuted);
+
+String itemLabel = hand.isEmpty() ? "Нет блока в руке" : hand.getHoverName().getString() + " x" + totalInInv;
+g.drawString(mc.font, trimText(mc.font, itemLabel, w - 10), x + 6, y + 5, 0xFFE2E8F0);
+String layerText = "Слой Y: " + (int) p.getY() + (layerSliceMode ? " [Разрез: " + targetBuildLayerY + "]" : " [Все]");
+g.drawString(mc.font, trimText(mc.font, layerText, w - 10), x + 6, y + 17, currentTheme.secondary);
+}
+
+private static void renderSpotifyMiniHud(GuiGraphics g, Minecraft mc, int sw, int sh) {
+int w = 148;
+int h = 24;
+int x = 8;
+int y = sh - h - 8;
+fillRoundedRect(g, x, y, w, h, currentTheme.bgWindow);
+drawRoundedBorder(g, x, y, w, h, 0xFF1DB954);
+
+// Анимированный мини-эквалайзер Spotify
+long t = System.currentTimeMillis() / 130L;
+for (int i = 0; i < 4; i++) {
+int bh = 4 + (int) (Math.abs(Math.sin(t * 0.7 + i * 1.3)) * 10);
+g.fill(x + 6 + i * 4, y + h - 5 - bh, x + 8 + i * 4, y + h - 5, 0xFF1DB954);
+}
+String track = DEMO_TRACKS.get(spotifyTrackIndex % DEMO_TRACKS.size());
+g.drawString(mc.font, trimText(mc.font, track, w - 30), x + 26, y + 8, 0xFFF1F5F9);
+}
+
+// =========================================================================
+// КАСТОМНАЯ ГРАФИКА И УТИЛИТЫ ОТРИСОВКИ (БЕЗ СЕРЫХ КНОПОК!)
+// =========================================================================
+
+private static void fillRoundedRect(GuiGraphics g, int x, int y, int w, int h, int color) {
+if (w <= 4 || h <= 4) {
+g.fill(x, y, x + w, y + h, color);
+return;
+}
+g.fill(x + 2, y, x + w - 2, y + 1, color);
+g.fill(x + 1, y + 1, x + w - 1, y + 2, color);
+g.fill(x, y + 2, x + w, y + h - 2, color);
+g.fill(x + 1, y + h - 2, x + w - 1, y + h - 1, color);
+g.fill(x + 2, y + h - 1, x + w - 2, y + h, color);
+}
+
+private static void drawRoundedBorder(GuiGraphics g, int x, int y, int w, int h, int color) {
+if (w <= 4 || h <= 4) return;
+g.fill(x + 2, y, x + w - 2, y + 1, color);
+g.fill(x + 2, y + h - 1, x + w - 2, y + h, color);
+g.fill(x, y + 2, x + 1, y + h - 2, color);
+g.fill(x + w - 1, y + 2, x + w, y + h - 2, color);
+g.fill(x + 1, y + 1, x + 2, y + 2, color);
+g.fill(x + w - 2, y + 1, x + w - 1, y + 2, color);
+g.fill(x + 1, y + h - 2, x + 2, y + h - 1, color);
+g.fill(x + w - 2, y + h - 2, x + w - 1, y + h - 1, color);
+}
+
+private static void fillVerticalGradient(GuiGraphics g, int x, int y, int w, int h, int topColor, int bottomColor) {
+int steps = Math.max(1, Math.min(h, 16));
+for (int i = 0; i < steps; i++) {
+int y1 = y + (i * h) / steps;
+int y2 = y + ((i + 1) * h) / steps;
+float t = (float) i / Math.max(1, steps - 1);
+g.fill(x, y1, x + w, y2, lerpColor(topColor, bottomColor, t));
+}
+}
+
+private static int lerpColor(int c1, int c2, float t) {
+int a1 = (c1 >>> 24) & 0xFF, r1 = (c1 >>> 16) & 0xFF, g1 = (c1 >>> 8) & 0xFF, b1 = c1 & 0xFF;
+int a2 = (c2 >>> 24) & 0xFF, r2 = (c2 >>> 16) & 0xFF, g2 = (c2 >>> 8) & 0xFF, b2 = c2 & 0xFF;
+int a = (int) (a1 + (a2 - a1) * t);
+int r = (int) (r1 + (r2 - r1) * t);
+int g = (int) (g1 + (g2 - g1) * t);
+int b = (int) (b1 + (b2 - b1) * t);
+return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+private static int adjustBrightness(int rgb, int delta) {
+int r = Mth.clamp(((rgb >> 16) & 0xFF) + delta, 0, 255);
+int g = Mth.clamp(((rgb >> 8) & 0xFF) + delta, 0, 255);
+int b = Mth.clamp((rgb & 0xFF) + delta, 0, 255);
+return (r << 16) | (g << 8) | b;
+}
+
+private static int shadeArgb(int argb, float factor) {
+int a = (argb >>> 24) & 0xFF;
+int r = Mth.clamp((int) (((argb >>> 16) & 0xFF) * factor), 0, 255);
+int g = Mth.clamp((int) (((argb >>> 8) & 0xFF) * factor), 0, 255);
+int b = Mth.clamp((int) ((argb & 0xFF) * factor), 0, 255);
+return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+private static String trimText(Font font, String text, int maxWidth) {
+if (text == null || maxWidth <= 8) return "";
+if (font.width(text) <= maxWidth) return text;
+String dots = "..";
+int limit = maxWidth - font.width(dots);
+StringBuilder sb = new StringBuilder();
+for (int i = 0; i < text.length(); i++) {
+sb.append(text.charAt(i));
+if (font.width(sb.toString()) > limit) {
+sb.setLength(Math.max(0, sb.length() - 1));
+break;
+}
+}
+return sb + dots;
+}
+
+private static void drawTabIcon(GuiGraphics g, MenuTab tab, int x, int y, int col) {
+switch (tab) {
+case VADIMKA -> {
+// Мордочка Крыски / спутника
+g.fill(x + 1, y + 1, x + 4, y + 4, col);
+g.fill(x + 6, y + 1, x + 9, y + 4, col);
+g.fill(x + 2, y + 3, x + 8, y + 9, col);
+g.fill(x + 3, y + 5, x + 4, y + 6, 0xFF0A0F14);
+g.fill(x + 6, y + 5, x + 7, y + 6, 0xFF0A0F14);
+}
+case AUTOPILOT -> {
+// Стрелка курса
+g.fill(x + 4, y + 1, x + 6, y + 9, col);
+g.fill(x + 3, y + 2, x + 7, y + 4, col);
+g.fill(x + 2, y + 4, x + 8, y + 6, col);
+}
+case AUTO_BUILD -> {
+// Кирпичики
+g.fill(x + 1, y + 2, x + 5, y + 5, col);
+g.fill(x + 6, y + 2, x + 9, y + 5, col);
+g.fill(x + 1, y + 6, x + 3, y + 9, col);
+g.fill(x + 4, y + 6, x + 9, y + 9, col);
+}
+case LITEMATICA_HUD -> {
+// Сетка чертежа
+drawRoundedBorder(g, x + 1, y + 1, 8, 8, col);
+g.fill(x + 4, y + 1, x + 5, y + 9, col);
+g.fill(x + 1, y + 4, x + 9, y + 5, col);
+}
+case VISUAL_RADAR -> {
+// Радар
+drawRoundedBorder(g, x + 1, y + 1, 8, 8, col);
+g.fill(x + 4, y + 4, x + 6, y + 6, col);
+g.fill(x + 5, y + 2, x + 8, y + 3, col);
+}
+case CHESTS_VILLAGERS -> {
+// Сундук
+g.fill(x + 1, y + 2, x + 9, y + 9, col);
+g.fill(x + 1, y + 4, x + 9, y + 5, 0xFF0A0F14);
+g.fill(x + 4, y + 4, x + 6, y + 7, 0xFFFDE047);
+}
+case COMBAT_PVP -> {
+// Меч
+g.fill(x + 7, y + 1, x + 9, y + 3, col);
+g.fill(x + 5, y + 3, x + 7, y + 5, col);
+g.fill(x + 3, y + 5, x + 5, y + 7, col);
+g.fill(x + 1, y + 7, x + 3, y + 9, col);
+g.fill(x + 2, y + 4, x + 6, y + 5, col);
+}
+case MUSIC_AFK -> {
+// Нота
+g.fill(x + 4, y + 1, x + 9, y + 3, col);
+g.fill(x + 4, y + 2, x + 5, y + 8, col);
+g.fill(x + 8, y + 2, x + 9, y + 7, col);
+g.fill(x + 2, y + 6, x + 5, y + 9, col);
+g.fill(x + 6, y + 5, x + 9, y + 8, col);
+}
+case CUSTOM_VISUAL -> {
+// Корона / Крылья
+g.fill(x + 1, y + 3, x + 3, y + 8, col);
+g.fill(x + 4, y + 2, x + 6, y + 8, col);
+g.fill(x + 7, y + 3, x + 9, y + 8, col);
+g.fill(x + 1, y + 6, x + 9, y + 8, col);
+}
+}
+}
+
+// =========================================================================
+// ВСТРОЕННЫЙ 3D-РЕНДЕРЕР ДЛЯ ЖИВОГО ПРЕВЬЮ ПЕРСОНАЖА И ВАДИМКИ
+// =========================================================================
+
+private static class VoxelBox {
+final double cx, cy, cz;
+final double sx, sy, sz;
+final int color;
+
+VoxelBox(double cx, double cy, double cz, double sx, double sy, double sz, int color) {
+https://www.google.com/url?q=http://this.cx&source=gmail&ust=1795793003709000&sa=E = cx;
+https://www.google.com/url?q=http://this.cy&source=gmail&ust=1795793003709000&sa=E = cy;
+https://www.google.com/url?q=http://this.cz&source=gmail&ust=1795793003709000&sa=E = cz;
+https://www.google.com/url?q=http://this.sx&source=gmail&ust=1795793003709000&sa=E = sx;
+https://www.google.com/url?q=http://this.sy&source=gmail&ust=1795793003709000&sa=E = sy;
+https://www.google.com/url?q=http://this.sz&source=gmail&ust=1795793003709000&sa=E = sz;
+this.color = color;
+}
+}
+
+private static class ProjectedFace {
+final int[] xs;
+final int[] ys;
+final double depth;
+final int color;
+
+ProjectedFace(int[] xs, int[] ys, double depth, int color) {
+this.xs = xs;
+this.ys = ys;
+this.depth = depth;
+this.color = color;
+}
+}
+
+private static void render3DVoxelScene(GuiGraphics g, List<VoxelBox> boxes, int vpX, int vpY, int vpW, int vpH, double yawRad, double pitchRad, double scale) {
+double cosY = Math.cos(yawRad), sinY = Math.sin(yawRad);
+double cosP = Math.cos(pitchRad), sinP = Math.sin(pitchRad);
+int centerX = vpX + vpW / 2;
+int centerY = vpY + vpH / 2 + 24;
+
+// Индексы 6 граней куба + множитель освещённости
+int[][] faces = {
+{0, 1, 2, 3}, // Front (-Z)
+{5, 4, 7, 6}, // Back (+Z)
+{4, 0, 3, 7}, // Left (-X)
+{1, 5, 6, 2}, // Right (+X)
+{3, 2, 6, 7}, // Top (+Y)
+{4, 5, 1, 0} // Bottom (-Y)
+};
+float[] faceLight = {1.05F, 0.72F, 0.82F, 0.90F, 1.15F, 0.58F};
+
+List<ProjectedFace> drawList = new ArrayList<>(boxes.size() * 3);
+
+for (VoxelBox b : boxes) {
+double hx = https://www.google.com/url?q=http://b.sx&source=gmail&ust=1795793003709000&sa=E * 0.5, hy = https://www.google.com/url?q=http://b.sy&source=gmail&ust=1795793003709000&sa=E * 0.5, hz = https://www.google.com/url?q=http://b.sz&source=gmail&ust=1795793003709000&sa=E * 0.5;
+double[][] verts = {
+{https://www.google.com/url?q=http://b.cx&source=gmail&ust=1795793003709000&sa=E - hx, https://www.google.com/url?q=http://b.cy&source=gmail&ust=1795793003709000&sa=E - hy, https://www.google.com/url?q=http://b.cz&source=gmail&ust=1795793003709000&sa=E - hz},
+{https://www.google.com/url?q=http://b.cx&source=gmail&ust=1795793003709000&sa=E + hx, https://www.google.com/url?q=http://b.cy&source=gmail&ust=1795793003709000&sa=E - hy, https://www.google.com/url?q=http://b.cz&source=gmail&ust=1795793003709000&sa=E - hz},
+{https://www.google.com/url?q=http://b.cx&source=gmail&ust=1795793003709000&sa=E + hx, https://www.google.com/url?q=http://b.cy&source=gmail&ust=1795793003709000&sa=E + hy, https://www.google.com/url?q=http://b.cz&source=gmail&ust=1795793003709000&sa=E - hz},
+{https://www.google.com/url?q=http://b.cx&source=gmail&ust=1795793003709000&sa=E - hx, https://www.google.com/url?q=http://b.cy&source=gmail&ust=1795793003709000&sa=E + hy, https://www.google.com/url?q=http://b.cz&source=gmail&ust=1795793003709000&sa=E - hz},
+{https://www.google.com/url?q=http://b.cx&source=gmail&ust=1795793003709000&sa=E - hx, https://www.google.com/url?q=http://b.cy&source=gmail&ust=1795793003709000&sa=E - hy, https://www.google.com/url?q=http://b.cz&source=gmail&ust=1795793003709000&sa=E + hz},
+{https://www.google.com/url?q=http://b.cx&source=gmail&ust=1795793003709000&sa=E + hx, https://www.google.com/url?q=http://b.cy&source=gmail&ust=1795793003709000&sa=E - hy, https://www.google.com/url?q=http://b.cz&source=gmail&ust=1795793003709000&sa=E + hz},
+{https://www.google.com/url?q=http://b.cx&source=gmail&ust=1795793003709000&sa=E + hx, https://www.google.com/url?q=http://b.cy&source=gmail&ust=1795793003709000&sa=E + hy, https://www.google.com/url?q=http://b.cz&source=gmail&ust=1795793003709000&sa=E + hz},
+{https://www.google.com/url?q=http://b.cx&source=gmail&ust=1795793003709000&sa=E - hx, https://www.google.com/url?q=http://b.cy&source=gmail&ust=1795793003709000&sa=E + hy, https://www.google.com/url?q=http://b.cz&source=gmail&ust=1795793003709000&sa=E + hz}
+};
+
+double[] px = new double[8];
+double[] py = new double[8];
+double[] pz = new double[8];
+
+for (int i = 0; i < 8; i++) {
+double x = verts[i][0];
+double y = verts[i][1];
+double z = verts[i][2];
+// Вращение по Y
+double rx = x * cosY - z * sinY;
+double rz = x * sinY + z * cosY;
+// Вращение по X (наклон камеры сверху)
+double ry = y * cosP - rz * sinP;
+double rz2 = y * sinP + rz * cosP;
+
+double persp = 9.0 / (9.0 + rz2 * 0.65);
+px[i] = centerX + rx * scale * persp;
+py[i] = centerY - ry * scale * persp;
+pz[i] = rz2;
+}
+
+for (int f = 0; f < 6; f++) {
+int i0 = faces[f][0], i1 = faces[f][1], i2 = faces[f][2], i3 = faces[f][3];
+// Отсечение невидимых задних граней
+double cross = (px[i1] - px[i0]) * (py[i2] - py[i0]) - (py[i1] - py[i0]) * (px[i2] - px[i0]);
+if (cross >= 0) {
+continue;
+}
+double avgZ = (pz[i0] + pz[i1] + pz[i2] + pz[i3]) * 0.25;
+int[] xs = {(int) Math.round(px[i0]), (int) Math.round(px[i1]), (int) Math.round(px[i2]), (int) Math.round(px[i3])};
+int[] ys = {(int) Math.round(py[i0]), (int) Math.round(py[i1]), (int) Math.round(py[i2]), (int) Math.round(py[i3])};
+drawList.add(new ProjectedFace(xs, ys, avgZ, shadeArgb(b.color, faceLight[f])));
+}
+}
+
+// Сортировка от дальних граней к ближним (алгоритм художника)
+drawList.sort(Comparator.comparingDouble((ProjectedFace pf) -> pf.depth).reversed());
+
+for (ProjectedFace pf : drawList) {
+fillTriangle2px(g, pf.xs[0], pf.ys[0], pf.xs[1], pf.ys[1], pf.xs[2], pf.ys[2], pf.color, vpX, vpY, vpW, vpH);
+fillTriangle2px(g, pf.xs[0], pf.ys[0], pf.xs[2], pf.ys[2], pf.xs[3], pf.ys[3], pf.color, vpX, vpY, vpW, vpH);
+}
+}
+
+private static void fillTriangle2px(GuiGraphics g, int x0, int y0, int x1, int y1, int x2, int y2, int color, int vpX, int vpY, int vpW, int vpH) {
+if (y0 > y1) { int tx = x0, ty = y0; x0 = x1; y0 = y1; x1 = tx; y1 = ty; }
+if (y0 > y2) { int tx = x0, ty = y0; x0 = x2; y0 = y2; x2 = tx; y2 = ty; }
+if (y1 > y2) { int tx = x1, ty = y1; x1 = x2; y1 = y2; x2 = tx; y2 = ty; }
+
+int totalH = y2 - y0;
+if (totalH <= 0) return;
+
+int minY = Math.max(y0, vpY);
+int maxY = Math.min(y2, vpY + vpH - 1);
+int minXBound = vpX;
+int maxXBound = vpX + vpW;
+
+for (int y = minY; y <= maxY; y += 2) {
+boolean secondHalf = y > y1 || y1 == y0;
+int segH = secondHalf ? (y2 - y1) : (y1 - y0);
+if (segH == 0) continue;
+
+float alpha = (float) (y - y0) / totalH;
+float beta = (float) (y - (secondHalf ? y1 : y0)) / segH;
+int ax = x0 + (int) ((x2 - x0) * alpha);
+int bx = secondHalf ? (x1 + (int) ((x2 - x1) * beta)) : (x0 + (int) ((x1 - x0) * beta));
+if (ax > bx) { int t = ax; ax = bx; bx = t; }
+
+int sx = Math.max(minXBound, ax);
+int ex = Math.min(maxXBound, bx + 1);
+int ey = Math.min(vpY + vpH, y + 2);
+if (ex > sx && ey > y) {
+g.fill(sx, y, ex, ey, color);
+}
+}
+}
+
+// =========================================================================
+// ГЛАВНОЕ КАСТОМНОЕ МЕНЮ НА КЛАВИШУ [P]
+// =========================================================================
 
 public static class AssistantVadimkaScreen extends Screen {
 private MenuTab activeTab;
+private int currentPage = 0;
+private int totalPages = 1;
 
-private static class SettingCard {
-final int y;
+// 3D-превью параметры
+private double previewYaw = -0.45;
+private boolean previewAutoRotate = true;
+
+// Описатели кастомных элементов (чтобы рисовать поверх невидимых хитбоксов кнопок)
+private static class TabVisual {
+final MenuTab tab;
+final int x, y, w, h;
+TabVisual(MenuTab tab, int x, int y, int w, int h) {
+this.tab = tab; this.x = x; this.y = y; this.w = w; this.h = h;
+}
+}
+
+private static class SettingRowVisual {
+final int x, y, w, h;
+final int btnX, btnY, btnW, btnH;
 final String title;
 final String subtitle;
-final boolean enabled;
+final boolean isToggle;
+final boolean toggleState;
+final String valueLabel;
 
-SettingCard(int y, String title, String subtitle, boolean enabled) {
-this.y = y;
-this.title = title;
-this.subtitle = subtitle;
-this.enabled = enabled;
+SettingRowVisual(int x, int y, int w, int h, int btnX, int btnY, int btnW, int btnH, String title, String subtitle, boolean isToggle, boolean toggleState, String valueLabel) {
+this.x = x; this.y = y; this.w = w; this.h = h;
+this.btnX = btnX; this.btnY = btnY; this.btnW = btnW; this.btnH = btnH;
+this.title = title; this.subtitle = subtitle;
+this.isToggle = isToggle; this.toggleState = toggleState; this.valueLabel = valueLabel;
 }
 }
 
-private final List<SettingCard> settingCards = new ArrayList<>();
+private static class SmallBtnVisual {
+final int x, y, w, h;
+final String label;
+final boolean danger;
+final boolean highlighted;
+SmallBtnVisual(int x, int y, int w, int h, String label, boolean danger, boolean highlighted) {
+this.x = x; this.y = y; this.w = w; this.h = h;
+this.label = label; this.danger = danger; this.highlighted = highlighted;
+}
+}
 
-// Мини-игра AFK
-private boolean afkGameRunning = false;
-private int afkPlayerLane = 1;
+private final List<TabVisual> tabVisuals = new ArrayList<>();
+private final List<SettingRowVisual> rowVisuals = new ArrayList<>();
+private final List<SmallBtnVisual> smallBtnVisuals = new ArrayList<>();
+
+private static class RowSpec {
+final String title;
+final String subtitle;
+final boolean isToggle;
+final boolean state;
+final String valueText;
+final Runnable action;
+
+RowSpec(String title, String subtitle, boolean isToggle, boolean state, String valueText, Runnable action) {
+this.title = title; this.subtitle = subtitle;
+this.isToggle = isToggle; this.state = state;
+this.valueText = valueText; this.action = action;
+}
+}
+
+// Состояние 3 AFK мини-игр
+public boolean afkGameRunning = false;
 private int afkScore = 0;
 private int afkBestScore = 0;
-private int afkTickCounter = 0;
-private final List<int[]> afkObstacles = new ArrayList<>();
-private final Random random = new Random();
+private int afkTick = 0;
+private int runnerLane = 1;
+private final List<int[]> runnerItems = new ArrayList<>(); // {lane, y, type(0=creeper,1=emerald)}
+private double sonicY = 0.0;
+private double sonicVel = 0.0;
+private final List<int[]> sonicObstacles = new ArrayList<>(); // {x, type(0=cactus,1=ring)}
+private int doomPlayerX = 50;
+private final List<int[]> doomBullets = new ArrayList<>(); // {x, y}
+private final List<int[]> doomEnemies = new ArrayList<>(); // {x, y, hp}
+private final Random gameRand = new Random();
 
 private int winX, winY, winW, winH;
 private int sidebarW, previewW, contentX, contentW;
@@ -443,200 +1347,402 @@ this.activeTab = activeTab;
 
 @Override
 protected void init() {
-this.settingCards.clear();
-this.winW = Math.min(this.width - 20, 560);
-this.winH = Math.min(this.height - 20, 310);
+this.tabVisuals.clear();
+this.rowVisuals.clear();
+this.smallBtnVisuals.clear();
+
+this.winW = Math.min(this.width - 16, 610);
+this.winH = Math.min(this.height - 16, 336);
 this.winX = (this.width - this.winW) / 2;
 this.winY = (this.height - this.winH) / 2;
 
-this.sidebarW = 128;
-this.previewW = 152;
+this.sidebarW = 114;
+this.previewW = 166;
 this.contentX = this.winX + this.sidebarW + 8;
 this.contentW = this.winW - this.sidebarW - this.previewW - 22;
 
+// 1. Кнопки 9 вкладок слева (хитбоксы, рисуем кастомно!)
 MenuTab[] tabs = MenuTab.values();
-int tabBtnH = 20;
-int tabStartY = this.winY + 34;
+int tabH = 22;
+int tabStartY = this.winY + 38;
 for (int i = 0; i < tabs.length; i++) {
 MenuTab tab = tabs[i];
-int by = tabStartY + i * (tabBtnH + 3);
-Button btn = Button.builder(Component.literal(tab.title), b -> {
+int tx = this.winX + 7;
+int ty = tabStartY + i * (tabH + 4);
+int tw = this.sidebarW - 14;
+this.tabVisuals.add(new TabVisual(tab, tx, ty, tw, tabH));
+addInvisibleHitbox(tx, ty, tw, tabH, () -> {
 this.activeTab = tab;
+this.currentPage = 0;
 if (tab != MenuTab.MUSIC_AFK) {
 this.afkGameRunning = false;
 }
 this.rebuildWidgets();
-}).bounds(this.winX + 6, by, this.sidebarW - 12, tabBtnH).build();
-btn.active = (tab != this.activeTab);
-this.addRenderableWidget(btn);
+});
 }
 
-int rowY = this.winY + 58;
+// Быстрая кнопка смены темы внизу сайдбара
+int themeBtnY = this.winY + this.winH - 30;
+addSmallButton(this.winX + 7, themeBtnY, this.sidebarW - 14, 20, "Тема: " + trimShortTheme(currentTheme), false, true, () -> {
+MenuTheme[] themes = MenuTheme.values();
+currentTheme = themes[(currentTheme.ordinal() + 1) % themes.length];
+this.rebuildWidgets();
+});
 
-switch (this.activeTab) {
+// Кнопка закрытия в шапке справа
+addSmallButton(this.winX + this.winW - 26, this.winY + 7, 19, 18, "✕", true, false, this::onClose);
+
+// Кнопки управления 3D-превью справа (поворот и авто-вращение)
+int prevX = this.winX + this.winW - this.previewW - 6;
+int prevCtrlY = this.winY + 178;
+int btn3W = (this.previewW - 24) / 3;
+addSmallButton(prevX + 8, prevCtrlY, btn3W, 17, "◀", false, false, () -> {
+previewAutoRotate = false;
+previewYaw -= 0.45;
+});
+addSmallButton(prevX + 12 + btn3W, prevCtrlY, btn3W, 17, previewAutoRotate ? "⏸" : "⟳", false, previewAutoRotate, () -> {
+previewAutoRotate = !previewAutoRotate;
+this.rebuildWidgets();
+});
+addSmallButton(prevX + 16 + btn3W * 2, prevCtrlY, btn3W, 17, "▶", false, false, () -> {
+previewAutoRotate = false;
+previewYaw += 0.45;
+});
+
+// 2. Наполняем центральную панель настройками текущей вкладки
+List<RowSpec> specs = buildTabSpecs(this.activeTab);
+int maxPerPage = (this.activeTab == MenuTab.MUSIC_AFK && this.afkGameRunning) ? 3 : 7;
+this.totalPages = Math.max(1, (specs.size() + maxPerPage - 1) / maxPerPage);
+this.currentPage = Mth.clamp(this.currentPage, 0, this.totalPages - 1);
+
+if (this.totalPages > 1) {
+int navY = this.winY + 40;
+addSmallButton(this.contentX + this.contentW - 68, navY, 20, 16, "◀", false, false, () -> {
+this.currentPage = (this.currentPage - 1 + this.totalPages) % this.totalPages;
+this.rebuildWidgets();
+});
+addSmallButton(this.contentX + this.contentW - 26, navY, 20, 16, "▶", false, false, () -> {
+this.currentPage = (this.currentPage + 1) % this.totalPages;
+this.rebuildWidgets();
+});
+}
+
+int startIdx = this.currentPage * maxPerPage;
+int endIdx = Math.min(specs.size(), startIdx + maxPerPage);
+int rowY = this.winY + 62;
+
+for (int i = startIdx; i < endIdx; i++) {
+RowSpec spec = specs.get(i);
+int rx = this.contentX + 7;
+int rw = this.contentW - 14;
+int rh = 28;
+int btnW = spec.isToggle ? 44 : 88;
+int btnH = 18;
+int btnX = rx + rw - btnW - 6;
+int btnY = rowY + (rh - btnH) / 2;
+
+this.rowVisuals.add(new SettingRowVisual(rx, rowY, rw, rh, btnX, btnY, btnW, btnH, spec.title, spec.subtitle, spec.isToggle, spec.state, spec.valueText));
+addInvisibleHitbox(btnX, btnY, btnW, btnH, () -> {
+spec.action.run();
+this.rebuildWidgets();
+});
+rowY += rh + 5;
+}
+}
+
+private String trimShortTheme(MenuTheme theme) {
+return switch (theme) {
+case CYBER_EMERALD -> "Emerald";
+case NETHER_CRIMSON -> "Crimson";
+case AMETHYST_VOID -> "Void";
+case ARCTIC_FROST -> "Frost";
+case OBSIDIAN_GOLD -> "Gold";
+};
+}
+
+private void addInvisibleHitbox(int x, int y, int w, int h, Runnable action) {
+this.addRenderableWidget(Button.builder(Component.empty(), b -> action.run()).bounds(x, y, w, h).build());
+}
+
+private void addSmallButton(int x, int y, int w, int h, String label, boolean danger, boolean highlighted, Runnable action) {
+this.smallBtnVisuals.add(new SmallBtnVisual(x, y, w, h, label, danger, highlighted));
+addInvisibleHitbox(x, y, w, h, action);
+}
+
+private List<RowSpec> buildTabSpecs(MenuTab tab) {
+List<RowSpec> list = new ArrayList<>();
+switch (tab) {
 case VADIMKA -> {
-addCardRow(rowY, "Спавн 3D-помощника в мире", "Отображать Вадимку и миньонов", companionVisibleInWorld, companionVisibleInWorld ? "ВКЛ" : "ВЫКЛ", () -> companionVisibleInWorld = !companionVisibleInWorld);
-rowY += 26;
-addCardRow(rowY, "Облик Вадимки", currentForm.title, true, "Сменить", () -> {
-VadimkaForm[] forms = VadimkaForm.values();
-currentForm = forms[(currentForm.ordinal() + 1) % forms.length];
-});
-rowY += 26;
-addCardRow(rowY, "Тихий / Активный режим", quietMode ? "Только помощь без шума" : "Живые эмоции и реакции", !quietMode, quietMode ? "ТИХИЙ" : "АКТИВ", () -> quietMode = !quietMode);
-rowY += 26;
-addCardRow(rowY, "Рандомная дичь и голос", "Шутки, комментарии и пасхалки", randomChaosMode, randomChaosMode ? "ВКЛ" : "ВЫКЛ", () -> randomChaosMode = !randomChaosMode);
-rowY += 28;
+list.add(toggleSpec("3D-спутник в мире", "Спавн Вадимки рядом с игроком", companionVisibleInWorld, () -> companionVisibleInWorld = !companionVisibleInWorld));
+list.add(cycleSpec("Облик Вадимки", "6 живых 3D-моделей", currentForm.shortName, () -> {
+VadimkaForm[] f = VadimkaForm.values();
+currentForm = f[(currentForm.ordinal() + 1) % f.length];
+}));
+list.add(cycleSpec("Размер в мире", "Масштаб 3D-модели Вадимки", companionScalePercent + "%", () -> {
+companionScalePercent = companionScalePercent >= 140 ? 60 : companionScalePercent + 20;
+}));
+list.add(toggleSpec("Команда миньонов (4)", "Летающие помощники вокруг тебя", minionsVisibleInWorld, () -> minionsVisibleInWorld = !minionsVisibleInWorld));
+list.add(toggleSpec("Тихий режим", "Убирает уведомления и шум", quietMode, () -> quietMode = !quietMode));
+list.add(toggleSpec("Комментатор событий", "Реакции на урон и опасности", voiceCommentator, () -> voiceCommentator = !voiceCommentator));
+list.add(toggleSpec("Режим рандомной дичи", "Шутки и пасхалки от Вадимки", randomChaosMode, () -> randomChaosMode = !randomChaosMode));
 for (MinionRole role : MinionRole.values()) {
-boolean state = Boolean.TRUE.equals(activeMinions.get(role));
-addCardRow(rowY, "Миньон: " + role.title, "Летающий помощник в мире", state, state ? "ВКЛ" : "ВЫКЛ", () -> {
-activeMinions.put(role, !Boolean.TRUE.equals(activeMinions.get(role)));
-});
-rowY += 24;
+boolean on = Boolean.TRUE.equals(activeMinions.get(role));
+list.add(toggleSpec("Миньон: " + role.title, "Роль в команде помощников", on, () -> activeMinions.put(role, !Boolean.TRUE.equals(activeMinions.get(role)))));
 }
 }
 case AUTOPILOT -> {
-addCardRow(rowY, "Профайлер стиля игры", "Запоминает привычки и темп", styleProfiler, styleProfiler ? "ВКЛ" : "ВЫКЛ", () -> styleProfiler = !styleProfiler);
-rowY += 28;
-addCardRow(rowY, "Безопасный автопилот", "Перехват и возврат управления", safeAutopilot, safeAutopilot ? "ВКЛ" : "ВЫКЛ", () -> safeAutopilot = !safeAutopilot);
+list.add(toggleSpec("Профайлер стиля игры", "Учится твоим маршрутам и темпу", styleProfiler, () -> styleProfiler = !styleProfiler));
+list.add(toggleSpec("Безопасный автопилот", "Ведение с учетом правил сервера", safeAutopilot, () -> safeAutopilot = !safeAutopilot));
+list.add(toggleSpec("Мгновенный возврат", "Передача управления по клавише", autoReturnControl, () -> autoReturnControl = !autoReturnControl));
+list.add(toggleSpec("Паркур-дублёр края", "Подстраховка на краю блока", parkourEdgeGuard, () -> parkourEdgeGuard = !parkourEdgeGuard));
+list.add(toggleSpec("Предупреждение падения", "Сигнал при опасной высоте", fallDangerAlert, () -> fallDangerAlert = !fallDangerAlert));
+list.add(toggleSpec("Ассистент спринта", "Поддержание темпа бега", sprintAssist, () -> sprintAssist = !sprintAssist));
 }
 case AUTO_BUILD -> {
-addCardRow(rowY, "Авто-постройка по схеме", "Помощь при укладке блоков", litematicaAutoBuild, litematicaAutoBuild ? "ВКЛ" : "ВЫКЛ", () -> litematicaAutoBuild = !litematicaAutoBuild);
-rowY += 28;
-addCardRow(rowY, "Умная реставрация", "Подсветка сломанных блоков", smartRestoration, smartRestoration ? "ВКЛ" : "ВЫКЛ", () -> smartRestoration = !smartRestoration);
-rowY += 28;
-addCardRow(rowY, "Авто-пополнение хотбара", "Подмена закончившихся стаков", hotbarAutoRefill, hotbarAutoRefill ? "ВКЛ" : "ВЫКЛ", () -> hotbarAutoRefill = !hotbarAutoRefill);
+list.add(toggleSpec("Авто-постройка по схеме", "Помощь по активной Litematica", litematicaAutoBuild, () -> litematicaAutoBuild = !litematicaAutoBuild));
+list.add(toggleSpec("Умная реставрация", "Восстановление разрушенных стен", smartRestoration, () -> smartRestoration = !smartRestoration));
+list.add(toggleSpec("Авто-пополнение хотбара", "Подмена закончившихся блоков", hotbarAutoRefill, () -> hotbarAutoRefill = !hotbarAutoRefill));
+list.add(toggleSpec("Инспектор редстоуна", "Анализ цепей и задержек", redstoneInspector, () -> redstoneInspector = !redstoneInspector));
+list.add(toggleSpec("3D-палитра и градиенты", "Подбор сочетаний блоков", palettePreview, () -> palettePreview = !palettePreview));
+list.add(toggleSpec("3D-линейка замеров", "Подсчёт расстояний и площади", rulerOverlay, () -> rulerOverlay = !rulerOverlay));
 }
 case LITEMATICA_HUD -> {
-addCardRow(rowY, "Сканер шалкеров", "Подсчёт ресурсов в рюкзаке", shulkerScanner, shulkerScanner ? "ВКЛ" : "ВЫКЛ", () -> shulkerScanner = !shulkerScanner);
-rowY += 28;
-addCardRow(rowY, "Разрез по слоям (Y)", "Подсветка дефицита по уровням", layerSliceMode, layerSliceMode ? "ВКЛ" : "ВЫКЛ", () -> layerSliceMode = !layerSliceMode);
+list.add(toggleSpec("Виджет материалов HUD", "Счётчик блоков в руке и сумке", litematicaHudEnabled, () -> litematicaHudEnabled = !litematicaHudEnabled));
+list.add(toggleSpec("Сканер шалкеров", "Учёт ресурсов внутри шалкеров", shulkerScanner, () -> shulkerScanner = !shulkerScanner));
+list.add(toggleSpec("Разрез по слоям (Y)", "Подсветка нужного уровня постройки", layerSliceMode, () -> layerSliceMode = !layerSliceMode));
+list.add(cycleSpec("Целевой слой (Y)", "Высота активного разреза", "Y = " + targetBuildLayerY, () -> {
+targetBuildLayerY = targetBuildLayerY >= 120 ? 40 : targetBuildLayerY + 8;
+}));
+list.add(toggleSpec("Подсветка дефицита", "Отметка нехватки материалов", deficitHighlight, () -> deficitHighlight = !deficitHighlight));
 }
 case VISUAL_RADAR -> {
-addCardRow(rowY, "Мини-карта-радар (HUD)", "Игроки, мобы и стороны света", radarHudEnabled, radarHudEnabled ? "ВКЛ" : "ВЫКЛ", () -> radarHudEnabled = !radarHudEnabled);
-rowY += 28;
-addCardRow(rowY, "Позиция радара на экране", radarRightSide ? "Справа сверху" : "Слева сверху (под FPS)", true, radarRightSide ? "ПРАВО" : "ЛЕВО", () -> radarRightSide = !radarRightSide);
-rowY += 28;
-addCardRow(rowY, "Звуковой радар", "Направление шагов и взрывов", soundRadarEnabled, soundRadarEnabled ? "ВКЛ" : "ВЫКЛ", () -> soundRadarEnabled = !soundRadarEnabled);
-rowY += 28;
-addCardRow(rowY, "Нить Ариадны", "Маршрут обратно наверх", ariadneThread, ariadneThread ? "ВКЛ" : "ВЫКЛ", () -> ariadneThread = !ariadneThread);
-rowY += 28;
-addCardRow(rowY, "Шестое чувство", "Предупреждение об угрозах", sixthSense, sixthSense ? "ВКЛ" : "ВЫКЛ", () -> sixthSense = !sixthSense);
+list.add(toggleSpec("Мини-карта-радар (HUD)", "Отображать карту на экране", radarHudEnabled, () -> radarHudEnabled = !radarHudEnabled));
+list.add(toggleSpec("Реальный рельеф мира", "Цветные блоки и тени высот", radarTerrainMode, () -> radarTerrainMode = !radarTerrainMode));
+list.add(cycleSpec("Угол экрана радара", "Расположение под FPS", radarRightSide ? "Справа" : "Слева", () -> radarRightSide = !radarRightSide));
+list.add(cycleSpec("Масштаб карты", "Обзор местности вокруг", radarZoomLevel == 0 ? "Близко" : (radarZoomLevel == 1 ? "Средне" : "Далеко"), () -> {
+radarZoomLevel = (radarZoomLevel + 1) % 3;
+}));
+list.add(toggleSpec("Звуковой радар угроз", "Красная дуга в сторону врага", soundRadarEnabled, () -> soundRadarEnabled = !soundRadarEnabled));
+list.add(toggleSpec("Нить Ариадны", "След из частиц обратно домой", ariadneThread, () -> ariadneThread = !ariadneThread));
+list.add(toggleSpec("Шестое чувство", "Тревога если моб за спиной", sixthSense, () -> sixthSense = !sixthSense));
 }
 case CHESTS_VILLAGERS -> {
-addCardRow(rowY, "Память сундуков", "Запоминает лут в контейнерах", chestMemory, chestMemory ? "ВКЛ" : "ВЫКЛ", () -> chestMemory = !chestMemory);
-rowY += 28;
-addCardRow(rowY, "Умный сортировщик", "Раскладка предметов по клику", smartSorter, smartSorter ? "ВКЛ" : "ВЫКЛ", () -> smartSorter = !smartSorter);
+list.add(toggleSpec("Память сундуков", "Запоминает предметы на базе", chestMemory, () -> chestMemory = !chestMemory));
+list.add(toggleSpec("Умный сортировщик", "Быстрая раскладка инвентаря", smartSorter, () -> smartSorter = !smartSorter));
+list.add(toggleSpec("Метки сундуков на карте", "Подсветка хранилищ рядом", radarShowChests, () -> radarShowChests = !radarShowChests));
+list.add(toggleSpec("Метки дропа на радаре", "Золотые точки выпавшего лута", radarShowDrops, () -> radarShowDrops = !radarShowDrops));
+list.add(toggleSpec("Трекер торгов жителей", "Поиск лучших книг и обменов", villagerTracker, () -> villagerTracker = !villagerTracker));
 }
 case COMBAT_PVP -> {
-addCardRow(rowY, "Траектории снарядов", "Дуга лука, жемчуга и зелий", trajectoriesEnabled, trajectoriesEnabled ? "ВКЛ" : "ВЫКЛ", () -> trajectoriesEnabled = !trajectoriesEnabled);
-rowY += 28;
-addCardRow(rowY, "Сканер тотемов и оружия", "Индикатор прочности и тотема", totemScanner, totemScanner ? "ВКЛ" : "ВЫКЛ", () -> totemScanner = !totemScanner);
+list.add(toggleSpec("Боевой HUD (Тотемы/HP)", "Панель выживания в углу экрана", combatHudEnabled, () -> combatHudEnabled = !combatHudEnabled));
+list.add(toggleSpec("Индикатор брони", "Полоски прочности Ш/Н/П/Б", armorDurabilityHud, () -> armorDurabilityHud = !armorDurabilityHud));
+list.add(toggleSpec("Сканер тотемов", "Контроль тотема в руке и сумке", totemScanner, () -> totemScanner = !totemScanner));
+list.add(toggleSpec("Траектории снарядов", "Дуга полёта лука и жемчуга", trajectoriesEnabled, () -> trajectoriesEnabled = !trajectoriesEnabled));
+list.add(toggleSpec("Реплей / метка смерти", "Фиксация точки гибели", deathReplayMarker, () -> deathReplayMarker = !deathReplayMarker));
 }
 case MUSIC_AFK -> {
-addCardRow(rowY, "Spotify Connect HUD", "Мини-плеер текущего трека", spotifyHud, spotifyHud ? "ВКЛ" : "ВЫКЛ", () -> spotifyHud = !spotifyHud);
-rowY += 28;
-addCardRow(rowY, "Экстренный выход при тревоге", "Закрытие игры при уроне/враге", afkPanicExit, afkPanicExit ? "ВКЛ" : "ВЫКЛ", () -> afkPanicExit = !afkPanicExit);
-rowY += 28;
-addCardRow(rowY, "MC-Раннер (A / D)", "Уворот от криперов в 3 полосах", afkGameRunning, afkGameRunning ? "СТОП" : "ИГРАТЬ", () -> {
+list.add(toggleSpec("Spotify Connect HUD", "Виджет трека с эквалайзером", spotifyHudEnabled, () -> spotifyHudEnabled = !spotifyHudEnabled));
+list.add(cycleSpec("Следующий трек", "Переключить мини-плеер", "Трек #" + (spotifyTrackIndex + 1), () -> {
+spotifyTrackIndex = (spotifyTrackIndex + 1) % DEMO_TRACKS.size();
+}));
+list.add(cycleSpec("Выбор MC мини-игры", selectedAfkGame.hint, selectedAfkGame.title, () -> {
+AfkGameType[] gs = AfkGameType.values();
+selectedAfkGame = gs[(selectedAfkGame.ordinal() + 1) % gs.length];
+resetAfkGameState();
+}));
+list.add(cycleSpec("Запуск AFK-игры", "Управление: A / D / SPACE / ESC", afkGameRunning ? "■ СТОП" : "▶ ИГРАТЬ", () -> {
 afkGameRunning = !afkGameRunning;
 if (afkGameRunning) {
-afkScore = 0;
-afkPlayerLane = 1;
-afkObstacles.clear();
+resetAfkGameState();
 }
-});
+}));
+list.add(toggleSpec("Экстренный выход", "Закрыть при уроне или враге", afkPanicExit, () -> afkPanicExit = !afkPanicExit));
 }
 case CUSTOM_VISUAL -> {
-addCardRow(rowY, "Тема интерфейса [P]", currentTheme.title, true, "Сменить", () -> {
+list.add(cycleSpec("Тема меню [P]", "Палитра окон и свечения", currentTheme.title, () -> {
 MenuTheme[] themes = MenuTheme.values();
 currentTheme = themes[(currentTheme.ordinal() + 1) % themes.length];
-});
-rowY += 26;
-addCardRow(rowY, "Крылья персонажа", WINGS_OPTIONS.get(wingsIndex), wingsIndex > 0, WINGS_OPTIONS.get(wingsIndex), () -> {
+}));
+list.add(cycleSpec("Крылья персонажа", "Видны в 3D-превью и в F5", WINGS_OPTIONS.get(wingsIndex), () -> {
 wingsIndex = (wingsIndex + 1) % WINGS_OPTIONS.size();
-});
-rowY += 26;
-addCardRow(rowY, "Рога персонажа", HORNS_OPTIONS.get(hornsIndex), hornsIndex > 0, HORNS_OPTIONS.get(hornsIndex), () -> {
+}));
+list.add(cycleSpec("Рога / Нимб", "Аксессуар над головой", HORNS_OPTIONS.get(hornsIndex), () -> {
 hornsIndex = (hornsIndex + 1) % HORNS_OPTIONS.size();
-});
-rowY += 26;
-addCardRow(rowY, "Шляпка / Ушки", HATS_OPTIONS.get(hatsIndex), hatsIndex > 0, HATS_OPTIONS.get(hatsIndex), () -> {
+}));
+list.add(cycleSpec("Шляпка / Ушки", "Головной убор в превью", HATS_OPTIONS.get(hatsIndex), () -> {
 hatsIndex = (hatsIndex + 1) % HATS_OPTIONS.size();
-});
-rowY += 26;
-addCardRow(rowY, "Одежда и плащ", OUTFIT_OPTIONS.get(outfitIndex), outfitIndex > 0, OUTFIT_OPTIONS.get(outfitIndex), () -> {
+}));
+list.add(cycleSpec("Одежда и плащ", "Стиль костюма персонажа", OUTFIT_OPTIONS.get(outfitIndex), () -> {
 outfitIndex = (outfitIndex + 1) % OUTFIT_OPTIONS.size();
-});
-rowY += 26;
-addCardRow(rowY, "Кастом-прицел", CROSSHAIR_OPTIONS.get(crosshairIndex), true, CROSSHAIR_OPTIONS.get(crosshairIndex), () -> {
+}));
+list.add(cycleSpec("Кастомный прицел", "Замена прицела в центре", CROSSHAIR_OPTIONS.get(crosshairIndex), () -> {
 crosshairIndex = (crosshairIndex + 1) % CROSSHAIR_OPTIONS.size();
-});
+}));
+list.add(toggleSpec("3D-эффекты крыльев в F5", "Отображать крылья/нимб в мире", worldCosmeticsParticles, () -> worldCosmeticsParticles = !worldCosmeticsParticles));
 }
+}
+return list;
 }
 
-this.addRenderableWidget(Button.builder(Component.literal("X"), b -> this.onClose())
-.bounds(this.winX + this.winW - 24, this.winY + 6, 18, 18).build());
+private RowSpec toggleSpec(String title, String sub, boolean state, Runnable act) {
+return new RowSpec(title, sub, true, state, "", act);
 }
 
-private void addCardRow(int y, String title, String subtitle, boolean enabled, String btnText, Runnable action) {
-this.settingCards.add(new SettingCard(y, title, subtitle, enabled));
-int btnW = 74;
-int btnX = this.contentX + this.contentW - btnW - 8;
-this.addRenderableWidget(Button.builder(Component.literal(btnText), b -> {
-action.run();
-this.rebuildWidgets();
-}).bounds(btnX, y + 2, btnW, 18).build());
+private RowSpec cycleSpec(String title, String sub, String val, Runnable act) {
+return new RowSpec(title, sub, false, true, val, act);
+}
+
+private void resetAfkGameState() {
+afkScore = 0;
+afkTick = 0;
+runnerLane = 1;
+runnerItems.clear();
+sonicY = 0.0;
+sonicVel = 0.0;
+sonicObstacles.clear();
+doomPlayerX = 50;
+doomBullets.clear();
+doomEnemies.clear();
 }
 
 @Override
 public void tick() {
 super.tick();
+if (previewAutoRotate) {
+previewYaw += 0.035;
+}
 if (!afkGameRunning) {
 return;
 }
-afkTickCounter++;
-if (afkTickCounter % 8 == 0) {
-afkScore++;
+afkTick++;
+switch (selectedAfkGame) {
+case RUNNER -> tickRunnerGame();
+case SONIC -> tickSonicGame();
+case DOOM -> tickDoomGame();
+}
 if (afkScore > afkBestScore) {
 afkBestScore = afkScore;
 }
-if (random.nextInt(3) == 0) {
-afkObstacles.add(new int[]{random.nextInt(3), 0});
+}
+
+private void tickRunnerGame() {
+if (afkTick % 8 == 0) {
+afkScore++;
+if (gameRand.nextInt(3) == 0) {
+int type = gameRand.nextInt(5) == 0 ? 1 : 0;
+runnerItems.add(new int[]{gameRand.nextInt(3), 0, type});
 }
 }
-if (afkTickCounter % 2 == 0) {
+if (afkTick % 2 == 0) {
 List<int[]> next = new ArrayList<>();
-for (int[] obs : afkObstacles) {
-obs[1] += 4;
-if (obs[1] >= 74 && obs[1] <= 90 && obs[0] == afkPlayerLane) {
-afkScore = 0;
-afkObstacles.clear();
+for (int[] it : runnerItems) {
+it[1] += 4;
+if (it[1] >= 72 && it[1] <= 90 && it[0] == runnerLane) {
+if (it[2] == 1) {
+afkScore += 5;
+continue;
+} else {
+resetAfkGameState();
 return;
 }
-if (obs[1] < 96) {
-next.add(obs);
+}
+if (it[1] < 98) next.add(it);
+}
+runnerItems.clear();
+runnerItems.addAll(next);
 }
 }
-afkObstacles.clear();
-afkObstacles.addAll(next);
+
+private void tickSonicGame() {
+if (afkTick % 6 == 0) afkScore++;
+sonicY += sonicVel;
+sonicVel -= 1.35;
+if (sonicY < 0.0) {
+sonicY = 0.0;
+sonicVel = 0.0;
 }
+if (afkTick % 24 == 0) {
+int type = gameRand.nextInt(3) == 0 ? 1 : 0;
+sonicObstacles.add(new int[]{100, type});
+}
+List<int[]> next = new ArrayList<>();
+for (int[] ob : sonicObstacles) {
+ob[0] -= 4;
+if (ob[0] >= 12 && ob[0] <= 24) {
+if (ob[1] == 1 && sonicY >= 8) {
+afkScore += 10;
+continue;
+} else if (ob[1] == 0 && sonicY < 10) {
+resetAfkGameState();
+return;
+}
+}
+if (ob[0] > -6) next.add(ob);
+}
+sonicObstacles.clear();
+sonicObstacles.addAll(next);
+}
+
+private void tickDoomGame() {
+if (afkTick % 26 == 0) {
+doomEnemies.add(new int[]{12 + gameRand.nextInt(76), 8, 1});
+}
+List<int[]> nextB = new ArrayList<>();
+for (int[] b : doomBullets) {
+b[1] -= 6;
+if (b[1] > 4) nextB.add(b);
+}
+doomBullets.clear();
+doomBullets.addAll(nextB);
+
+List<int[]> nextE = new ArrayList<>();
+for (int[] e : doomEnemies) {
+if (afkTick % 3 == 0) e[1] += 2;
+boolean hit = false;
+for (int i = doomBullets.size() - 1; i >= 0; i--) {
+int[] b = doomBullets.get(i);
+if (Math.abs(b[0] - e[0]) < 10 && Math.abs(b[1] - e[1]) < 10) {
+doomBullets.remove(i);
+hit = true;
+afkScore += 5;
+break;
+}
+}
+if (hit) continue;
+if (e[1] >= 84) {
+resetAfkGameState();
+return;
+}
+nextE.add(e);
+}
+doomEnemies.clear();
+doomEnemies.addAll(nextE);
 }
 
 @Override
 public boolean keyPressed(KeyEvent event) {
 if (afkGameRunning) {
-if (event.key() == GLFW.GLFW_KEY_A || event.key() == GLFW.GLFW_KEY_LEFT) {
-afkPlayerLane = Math.max(0, afkPlayerLane - 1);
-return true;
-}
-if (event.key() == GLFW.GLFW_KEY_D || event.key() == GLFW.GLFW_KEY_RIGHT) {
-afkPlayerLane = Math.min(2, afkPlayerLane + 1);
-return true;
-}
-if (event.key() == GLFW.GLFW_KEY_ESCAPE) {
+int k = event.key();
+if (k == GLFW.GLFW_KEY_ESCAPE) {
 afkGameRunning = false;
 this.rebuildWidgets();
 return true;
+}
+if (selectedAfkGame == AfkGameType.RUNNER) {
+if (k == GLFW.GLFW_KEY_A || k == GLFW.GLFW_KEY_LEFT) { runnerLane = Math.max(0, runnerLane - 1); return true; }
+if (k == GLFW.GLFW_KEY_D || k == GLFW.GLFW_KEY_RIGHT) { runnerLane = Math.min(2, runnerLane + 1); return true; }
+} else if (selectedAfkGame == AfkGameType.SONIC) {
+if ((k == GLFW.GLFW_KEY_SPACE || k == GLFW.GLFW_KEY_W || k == GLFW.GLFW_KEY_UP) && sonicY <= 0.5) {
+sonicVel = 10.5;
+return true;
+}
+} else if (selectedAfkGame == AfkGameType.DOOM) {
+if (k == GLFW.GLFW_KEY_A || k == GLFW.GLFW_KEY_LEFT) { doomPlayerX = Math.max(10, doomPlayerX - 9); return true; }
+if (k == GLFW.GLFW_KEY_D || k == GLFW.GLFW_KEY_RIGHT) { doomPlayerX = Math.min(90, doomPlayerX + 9); return true; }
+if (k == GLFW.GLFW_KEY_SPACE || k == GLFW.GLFW_KEY_W || k == GLFW.GLFW_KEY_UP) {
+doomBullets.add(new int[]{doomPlayerX, 82});
+return true;
+}
 }
 }
 if (event.key() == GLFW.GLFW_KEY_P) {
@@ -648,225 +1754,406 @@ return super.keyPressed(event);
 
 @Override
 public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-graphics.fill(0, 0, this.width, this.height, 0x9906090E);
+graphics.fill(0, 0, this.width, this.height, 0xA605080D);
 }
 
 @Override
-public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-// Главное окно
-graphics.fill(winX, winY, winX + winW, winY + winH, currentTheme.bgMain);
-drawBorder(graphics, winX, winY, winW, winH, currentTheme.accent);
+public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
+// Сначала вызываем super.render (отработают скрытые хитбоксы и фон),
+// а сразу поверх рисуем 100% кастомный современный интерфейс без серых кнопок!
+super.render(g, mouseX, mouseY, partialTick);
 
-// Шапка
-graphics.fill(winX + 1, winY + 1, winX + winW - 1, winY + 28, currentTheme.bgCard);
-graphics.fill(winX + 1, winY + 28, winX + winW - 1, winY + 29, currentTheme.accent);
+// 1. Корпус главного окна с градиентной шапкой и неоновой рамкой
+fillRoundedRect(g, winX, winY, winW, winH, currentTheme.bgWindow);
+drawRoundedBorder(g, winX, winY, winW, winH, currentTheme.accent);
 
-// Левая панель
-graphics.fill(winX + 2, winY + 30, winX + sidebarW, winY + winH - 2, currentTheme.bgCard);
+// Шапка окна
+fillVerticalGradient(g, winX + 2, winY + 2, winW - 4, 29, currentTheme.bgCard, currentTheme.bgPanel);
+g.fill(winX + 2, winY + 31, winX + winW - 2, winY + 32, currentTheme.accent);
 
-// Центральная карточка
-graphics.fill(contentX, winY + 34, contentX + contentW, winY + winH - 8, currentTheme.bgCard);
-drawBorder(graphics, contentX, winY + 34, contentW, winH - 42, 0x33FFFFFF);
+// Бейдж названия + версия + статус
+g.fill(winX + 10, winY + 12, winX + 16, winY + 18, currentTheme.accent);
+g.drawString(this.font, "ASSISTANT VADIMKA", winX + 22, winY + 11, 0xFFFFFFFF);
+int verX = winX + 22 + this.font.width("ASSISTANT VADIMKA") + 8;
+fillRoundedRect(g, verX, winY + 9, 76, 13, 0xFF162231);
+drawRoundedBorder(g, verX, winY + 9, 76, 13, currentTheme.secondary);
+g.drawString(this.font, VERSION_LABEL + " • 1.21.11", verX + 5, winY + 12, currentTheme.secondary);
 
-// Отрисовка стильных карточек настроек внутри центральной панели
-for (SettingCard card : settingCards) {
-int cx = contentX + 6;
-int cw = contentW - 12;
-int ch = 22;
-graphics.fill(cx, card.y, cx + cw, card.y + ch, 0x880B1017);
-int stripColor = card.enabled ? currentTheme.accent : 0xFF475569;
-graphics.fill(cx, card.y, cx + 3, card.y + ch, stripColor);
-drawBorder(graphics, cx, card.y, cw, ch, 0x22FFFFFF);
+// 2. Левый сайдбар
+fillRoundedRect(g, winX + 4, winY + 35, sidebarW - 2, winH - 39, currentTheme.bgPanel);
+drawRoundedBorder(g, winX + 4, winY + 35, sidebarW - 2, winH - 39, currentTheme.borderMuted);
 
-graphics.drawString(this.font, card.title, cx + 8, card.y + 3, 0xFFF1F5F9);
-graphics.drawString(this.font, card.subtitle, cx + 8, card.y + 12, 0xFF94A3B8);
+for (TabVisual tv : tabVisuals) {
+boolean active = tv.tab == this.activeTab;
+boolean hover = isOver(mouseX, mouseY, tv.x, tv.y, tv.w, tv.h);
+int bg = active ? lerpColor(currentTheme.bgCard, currentTheme.accent, 0.25F) : (hover ? currentTheme.bgCard : 0xFF0C121B);
+fillRoundedRect(g, tv.x, tv.y, tv.w, tv.h, bg);
+if (active) {
+g.fill(tv.x + 1, tv.y + 4, tv.x + 3, tv.y + tv.h - 4, currentTheme.accent);
+drawRoundedBorder(g, tv.x, tv.y, tv.w, tv.h, currentTheme.accent);
+} else if (hover) {
+drawRoundedBorder(g, tv.x, tv.y, tv.w, tv.h, currentTheme.secondary);
+}
+int iconCol = active ? currentTheme.accent : (hover ? currentTheme.secondary : 0xFF64748B);
+drawTabIcon(g, tv.tab, tv.x + 6, tv.y + 6, iconCol);
+String tLabel = trimText(this.font, tv.tab.shortTitle, tv.w - 24);
+g.drawString(this.font, tLabel, tv.x + 20, tv.y + 7, active ? 0xFFFFFFFF : (hover ? 0xFFE2E8F0 : 0xFF94A3B8));
 }
 
-// Правая панель превью
-int prevX = winX + winW - previewW - 6;
-int prevY = winY + 34;
-int prevH = winH - 42;
-graphics.fill(prevX, prevY, prevX + previewW, prevY + prevH, currentTheme.bgCard);
-drawBorder(graphics, prevX, prevY, previewW, prevH, currentTheme.secondary);
+// 3. Центральная панель настроек
+fillRoundedRect(g, contentX, winY + 35, contentW, winH - 39, currentTheme.bgPanel);
+drawRoundedBorder(g, contentX, winY + 35, contentW, winH - 39, currentTheme.borderMuted);
 
-// Кнопки поверх карточек
-super.render(graphics, mouseX, mouseY, partialTick);
+int titleMaxW = totalPages > 1 ? (contentW - 84) : (contentW - 18);
+g.drawString(this.font, trimText(this.font, activeTab.fullTitle, titleMaxW), contentX + 10, winY + 44, currentTheme.secondary);
+if (totalPages > 1) {
+String pStr = (currentPage + 1) + "/" + totalPages;
+g.drawString(this.font, pStr, contentX + contentW - 44, winY + 44, 0xFF94A3B8);
+}
+g.fill(contentX + 8, winY + 57, contentX + contentW - 8, winY + 58, currentTheme.borderMuted);
 
-// Заголовки
-graphics.drawString(this.font, "ASSISTANT VADIMKA | Fabric 1.21.11 [P]", winX + 10, winY + 10, currentTheme.accent);
-graphics.drawString(this.font, activeTab.title, contentX + 8, winY + 42, currentTheme.secondary);
+// Карточки настроек с кастомными тумблерами и селекторами
+for (SettingRowVisual rv : rowVisuals) {
+boolean cardHover = isOver(mouseX, mouseY, rv.x, rv.y, rv.w, rv.h);
+boolean btnHover = isOver(mouseX, mouseY, rv.btnX, rv.btnY, rv.btnW, rv.btnH);
 
+fillRoundedRect(g, rv.x, rv.y, rv.w, rv.h, cardHover ? lerpColor(currentTheme.bgCard, 0xFFFFFFFF, 0.05F) : currentTheme.bgCard);
+drawRoundedBorder(g, rv.x, rv.y, rv.w, rv.h, cardHover ? currentTheme.secondary : currentTheme.borderMuted);
+
+// Левая цветная полоска статуса
+int stripCol = rv.isToggle ? (rv.toggleState ? currentTheme.accent : 0xFF475569) : currentTheme.secondary;
+g.fill(rv.x + 2, rv.y + 5, rv.x + 4, rv.y + rv.h - 5, stripCol);
+
+// Текст с гарантированной защитой от наезда на кнопку справа
+int textMaxW = (rv.btnX - (rv.x + 10)) - 6;
+g.drawString(this.font, trimText(this.font, rv.title, textMaxW), rv.x + 10, rv.y + 5, 0xFFF8FAFC);
+g.drawString(this.font, trimText(this.font, rv.subtitle, textMaxW), rv.x + 10, rv.y + 16, 0xFF94A3B8);
+
+if (rv.isToggle) {
+// Современный тумблер-переключатель (Pill Switch)
+int trackCol = rv.toggleState ? currentTheme.accent : 0xFF283446;
+fillRoundedRect(g, rv.btnX, rv.btnY + 1, rv.btnW, rv.btnH - 2, trackCol);
+drawRoundedBorder(g, rv.btnX, rv.btnY + 1, rv.btnW, rv.btnH - 2, btnHover ? 0xFFFFFFFF : (rv.toggleState ? currentTheme.accent : 0xFF475569));
+int knobSize = rv.btnH - 6;
+int knobX = rv.toggleState ? (rv.btnX + rv.btnW - knobSize - 3) : (rv.btnX + 3);
+fillRoundedRect(g, knobX, rv.btnY + 3, knobSize, knobSize, 0xFFFFFFFF);
+String tag = rv.toggleState ? "ON" : "OFF";
+int tagX = rv.toggleState ? (rv.btnX + 5) : (rv.btnX + rv.btnW - this.font.width(tag) - 5);
+g.drawString(this.font, tag, tagX, rv.btnY + 5, rv.toggleState ? 0xFF061510 : 0xFF94A3B8);
+} else {
+// Кастомная кнопка-селектор значения
+int selBg = btnHover ? lerpColor(currentTheme.bgPanel, currentTheme.accent, 0.35F) : 0xFF0B111A;
+fillRoundedRect(g, rv.btnX, rv.btnY, rv.btnW, rv.btnH, selBg);
+drawRoundedBorder(g, rv.btnX, rv.btnY, rv.btnW, rv.btnH, btnHover ? currentTheme.accent : currentTheme.secondary);
+String val = trimText(this.font, rv.valueLabel, rv.btnW - 10);
+int vx = rv.btnX + (rv.btnW - this.font.width(val)) / 2;
+g.drawString(this.font, val, vx, rv.btnY + 5, btnHover ? 0xFFFFFFFF : currentTheme.secondary);
+}
+}
+
+// Поле AFK мини-игры в 8-й вкладке
 if (activeTab == MenuTab.MUSIC_AFK && afkGameRunning) {
-renderAfkMiniGameBox(graphics, contentX + 8, winY + 148, contentW - 16, 102);
+renderAfkGameCanvas(g, contentX + 8, winY + 166, contentW - 16, winH - 178);
 }
 
-renderLivePreviewPanel(graphics, prevX, prevY, previewW, prevH);
+// 4. Правая студия 3D-превью
+int prevX = winX + winW - previewW - 6;
+int prevY = winY + 35;
+int prevH = winH - 39;
+fillRoundedRect(g, prevX, prevY, previewW, prevH, currentTheme.bgPanel);
+drawRoundedBorder(g, prevX, prevY, previewW, prevH, currentTheme.secondary);
+renderLive3DPreviewStudio(g, prevX, prevY, previewW, prevH);
+
+// 5. Кастомная отрисовка всех малых кнопок (крестик, смена темы, стрелки 3D, страницы)
+for (SmallBtnVisual sb : smallBtnVisuals) {
+boolean hover = isOver(mouseX, mouseY, sb.x, sb.y, sb.w, sb.h);
+int bg;
+int border;
+if (sb.danger) {
+bg = hover ? 0xFFDC2626 : 0xFF331419;
+border = hover ? 0xFFFCA5A5 : 0xFFEF4444;
+} else if (sb.highlighted) {
+bg = hover ? lerpColor(currentTheme.bgCard, currentTheme.accent, 0.45F) : lerpColor(currentTheme.bgCard, currentTheme.accent, 0.2F);
+border = currentTheme.accent;
+} else {
+bg = hover ? currentTheme.bgCard : 0xFF0C121B;
+border = hover ? currentTheme.secondary : currentTheme.borderMuted;
+}
+fillRoundedRect(g, sb.x, sb.y, sb.w, sb.h, bg);
+drawRoundedBorder(g, sb.x, sb.y, sb.w, sb.h, border);
+String lbl = trimText(this.font, sb.label, sb.w - 6);
+int lx = sb.x + (sb.w - this.font.width(lbl)) / 2;
+int ly = sb.y + (sb.h - 8) / 2;
+g.drawString(this.font, lbl, lx, ly, hover ? 0xFFFFFFFF : 0xFFE2E8F0);
+}
 }
 
-private void renderAfkMiniGameBox(GuiGraphics graphics, int gx, int gy, int gw, int gh) {
-graphics.fill(gx, gy, gx + gw, gy + gh, 0xFF0A0F14);
-drawBorder(graphics, gx, gy, gw, gh, currentTheme.accent);
-graphics.drawString(this.font, "MC-РАННЕР | Счёт: " + afkScore + " Рекорд: " + afkBestScore, gx + 6, gy + 4, 0xFFFDE68A);
-
-int laneW = (gw - 20) / 3;
-for (int lane = 0; lane < 3; lane++) {
-int lx = gx + 10 + lane * laneW;
-graphics.fill(lx + 2, gy + 16, lx + laneW - 2, gy + gh - 6, 0x22FFFFFF);
+private boolean isOver(int mx, int my, int x, int y, int w, int h) {
+return mx >= x && mx < x + w && my >= y && my < y + h;
 }
 
-for (int[] obs : afkObstacles) {
-int ox = gx + 10 + obs[0] * laneW + laneW / 2 - 6;
-int oy = gy + 16 + obs[1];
-graphics.fill(ox, oy, ox + 12, oy + 12, 0xFF22C55E);
-graphics.fill(ox + 2, oy + 3, ox + 4, oy + 5, 0xFF000000);
-graphics.fill(ox + 8, oy + 3, ox + 10, oy + 5, 0xFF000000);
+// =====================================================================
+// ОТРИСОВКА ЖИВОЙ 3D-СТУДИИ СПРАВА В МЕНЮ
+// =====================================================================
+
+private void renderLive3DPreviewStudio(GuiGraphics g, int px, int py, int pw, int ph) {
+g.drawString(this.font, "✦ 3D СТУДИЯ ПРЕВЬЮ", px + 8, py + 8, currentTheme.accent);
+
+int vpX = px + 8;
+int vpY = py + 22;
+int vpW = pw - 16;
+int vpH = 116;
+fillVerticalGradient(g, vpX, vpY, vpW, vpH, 0xFF060B12, 0xFF0E1A2A);
+drawRoundedBorder(g, vpX, vpY, vpW, vpH, currentTheme.borderMuted);
+
+// Голографическая сетка на фоне превью
+for (int gy = vpY + 18; gy < vpY + vpH; gy += 18) {
+g.fill(vpX + 2, gy, vpX + vpW - 2, gy + 1, 0x12FFFFFF);
 }
 
-int px = gx + 10 + afkPlayerLane * laneW + laneW / 2 - 6;
-int py = gy + gh - 20;
-graphics.fill(px, py, px + 12, py + 12, currentTheme.secondary);
+List<VoxelBox> scene = build3DPreviewModels();
+render3DVoxelScene(g, scene, vpX + 1, vpY + 1, vpW - 2, vpH - 2, previewYaw, 0.24, 24.0);
+
+// Карточка сводки ниже кнопок вращения
+int infoY = py + 168;
+fillRoundedRect(g, px + 8, infoY, pw - 16, ph - 176, currentTheme.bgCard);
+drawRoundedBorder(g, px + 8, infoY, pw - 16, ph - 176, currentTheme.borderMuted);
+
+int iy = infoY + 7;
+int maxW = pw - 28;
+g.drawString(this.font, trimText(this.font, "Вадимка: " + currentForm.shortName, maxW), px + 14, iy, currentTheme.accent);
+iy += 13;
+int activeM = 0;
+for (MinionRole r : MinionRole.values()) {
+if (Boolean.TRUE.equals(activeMinions.get(r))) activeM++;
+}
+g.drawString(this.font, trimText(this.font, "Миньоны: " + activeM + "/4 • " + companionScalePercent + "%", maxW), px + 14, iy, 0xFFCBD5E1);
+iy += 14;
+g.fill(px + 14, iy - 2, px + pw - 14, iy - 1, currentTheme.borderMuted);
+iy += 4;
+g.drawString(this.font, trimText(this.font, "Крылья: " + WINGS_OPTIONS.get(wingsIndex), maxW), px + 14, iy, 0xFFE2E8F0);
+iy += 12;
+g.drawString(this.font, trimText(this.font, "Рога: " + HORNS_OPTIONS.get(hornsIndex), maxW), px + 14, iy, 0xFFE2E8F0);
+iy += 12;
+g.drawString(this.font, trimText(this.font, "Шляпка: " + HATS_OPTIONS.get(hatsIndex), maxW), px + 14, iy, 0xFFE2E8F0);
+iy += 12;
+g.drawString(this.font, trimText(this.font, "Одежда: " + OUTFIT_OPTIONS.get(outfitIndex), maxW), px + 14, iy, 0xFFE2E8F0);
+iy += 12;
+g.drawString(this.font, trimText(this.font, "Прицел: " + CROSSHAIR_OPTIONS.get(crosshairIndex), maxW), px + 14, iy, currentTheme.secondary);
 }
 
-private void renderLivePreviewPanel(GuiGraphics graphics, int px, int py, int pw, int ph) {
-graphics.drawString(this.font, "ЖИВОЕ ПРЕВЬЮ 3D", px + 8, py + 8, currentTheme.accent);
+private List<VoxelBox> build3DPreviewModels() {
+List<VoxelBox> boxes = new ArrayList<>();
+double time = System.currentTimeMillis() / 350.0;
+double bob = Math.sin(time) * 0.08;
 
-int stageX = px + 8;
-int stageY = py + 22;
-int stageW = pw - 16;
-int stageH = 132;
-graphics.fill(stageX, stageY, stageX + stageW, stageY + stageH, 0xFF070B10);
-drawBorder(graphics, stageX, stageY, stageW, stageH, 0x33FFFFFF);
+// Подиум под героями
+boxes.add(new VoxelBox(0.0, -0.18, 0.0, 3.6, 0.14, 2.2, 0xFF1E293B));
+boxes.add(new VoxelBox(0.0, -0.10, 0.0, 3.3, 0.04, 1.9, currentTheme.accent));
 
-// Неоновый подиум с перспективой
-int podY = stageY + stageH - 18;
-graphics.fill(stageX + 12, podY, stageX + stageW - 12, podY + 4, currentTheme.accent);
-graphics.fill(stageX + 18, podY + 4, stageX + stageW - 18, podY + 9, 0xFF1E293B);
-
-// Плавная анимация дыхания и парения
-double time = System.currentTimeMillis() / 280.0;
-int breathOffset = (int) Math.round(Math.sin(time));
-int floatOffset = (int) Math.round(Math.sin(time * 1.4) * 3.0);
-
-int pX = stageX + 42;
-int pY = podY;
-
-// 1. Крылья с тенями и перьями
-if (wingsIndex > 0) {
-int wMain = wingsIndex == 1 ? 0xFFF8FAFC : (wingsIndex == 2 ? 0xFFDC2626 : 0xFF06B6D4);
-int wEdge = wingsIndex == 1 ? 0xFFBAE6FD : (wingsIndex == 2 ? 0xFF7F1D1D : 0xFF67E8F9);
-// Левое крыло
-graphics.fill(pX - 28, pY - 62 + breathOffset, pX - 10, pY - 34 + breathOffset, wEdge);
-graphics.fill(pX - 26, pY - 60 + breathOffset, pX - 11, pY - 38 + breathOffset, wMain);
-graphics.fill(pX - 32, pY - 56 + breathOffset, pX - 26, pY - 44 + breathOffset, wEdge);
-// Правое крыло
-graphics.fill(pX + 10, pY - 62 + breathOffset, pX + 28, pY - 34 + breathOffset, wEdge);
-graphics.fill(pX + 11, pY - 60 + breathOffset, pX + 26, pY - 38 + breathOffset, wMain);
-graphics.fill(pX + 26, pY - 56 + breathOffset, pX + 32, pY - 44 + breathOffset, wEdge);
-}
-
-// 2. Ноги и ботинки персонажа
-graphics.fill(pX - 8, pY - 28, pX - 1, pY - 4, 0xFF1E293B);
-graphics.fill(pX + 1, pY - 28, pX + 8, pY - 4, 0xFF0F172A);
-graphics.fill(pX - 8, pY - 4, pX - 1, pY, 0xFF475569);
-graphics.fill(pX + 1, pY - 4, pX + 8, pY, 0xFF334155);
-
-// 3. Торс и руки (с учётом выбранной одежды)
+// --- 3D МОДЕЛЬ ИГРОКА (слева на подиуме, x = -0.68) ---
+double px = -0.68;
 int bodyMain = switch (outfitIndex) {
-case 1 -> 0xFF0284C7;
-case 2 -> 0xFF1E293B;
-case 3 -> 0xFF059669;
-default -> 0xFF2563EB;
+case 1 -> 0xFF0284C7; // Кибер-плащ
+case 2 -> 0xFF18181B; // Тень Ассасина
+case 3 -> 0xFF059669; // Изумрудный сет
+case 4 -> 0xFF4C1D95; // Незерит Неон
+default -> 0xFF1E293B;
 };
-int bodyShade = switch (outfitIndex) {
+int bodyTrim = switch (outfitIndex) {
 case 1 -> 0xFF38BDF8;
 case 2 -> 0xFFF43F5E;
 case 3 -> 0xFF34D399;
-default -> 0xFF60A5FA;
+case 4 -> 0xFFC084FC;
+default -> 0xFF475569;
 };
+
+// Ноги
+boxes.add(new VoxelBox(px - 0.15, 0.42, 0.0, 0.26, 0.84, 0.28, 0xFF111827));
+boxes.add(new VoxelBox(px + 0.15, 0.42, 0.0, 0.26, 0.84, 0.28, 0xFF0F172A));
+// Торс + полоса костюма
+boxes.add(new VoxelBox(px, 1.24, 0.0, 0.56, 0.80, 0.30, bodyMain));
+boxes.add(new VoxelBox(px, 1.24, -0.16, 0.18, 0.72, 0.04, bodyTrim));
 // Руки
-graphics.fill(pX - 14, pY - 54 + breathOffset, pX - 9, pY - 28 + breathOffset, bodyMain);
-graphics.fill(pX + 9, pY - 54 + breathOffset, pX + 14, pY - 28 + breathOffset, bodyMain);
-// Торс + неоновая полоса
-graphics.fill(pX - 9, pY - 55 + breathOffset, pX + 9, pY - 28, bodyMain);
-graphics.fill(pX - 2, pY - 55 + breathOffset, pX + 2, pY - 28, bodyShade);
-
-// 4. Голова персонажа (причёска, глаза, рот)
-int headY = pY - 75 + breathOffset;
-graphics.fill(pX - 10, headY, pX + 10, headY + 20, 0xFFFDBA74);
-// Тёмные волосы как у скина игрока
-graphics.fill(pX - 10, headY, pX + 10, headY + 6, 0xFF18181B);
-graphics.fill(pX - 10, headY + 6, pX - 7, headY + 11, 0xFF18181B);
-graphics.fill(pX + 7, headY + 6, pX + 10, headY + 11, 0xFF18181B);
+boxes.add(new VoxelBox(px - 0.42, 1.22, 0.0, 0.24, 0.76, 0.26, bodyMain));
+boxes.add(new VoxelBox(px + 0.42, 1.22, 0.0, 0.24, 0.76, 0.26, bodyMain));
+// Плащ за спиной при выбранной одежде
+if (outfitIndex > 0) {
+boxes.add(new VoxelBox(px, 1.12, 0.24, 0.52, 1.02, 0.06, bodyTrim));
+}
+// Голова + волосы
+boxes.add(new VoxelBox(px, 1.94, 0.0, 0.58, 0.58, 0.58, 0xFFFDBA74));
+boxes.add(new VoxelBox(px, 2.15, 0.02, 0.62, 0.22, 0.62, 0xFF18181B));
+boxes.add(new VoxelBox(px, 1.96, 0.27, 0.62, 0.52, 0.10, 0xFF18181B));
 // Глаза
-graphics.fill(pX - 7, headY + 10, pX - 3, headY + 13, 0xFFFFFFFF);
-graphics.fill(pX - 6, headY + 10, pX - 4, headY + 13, 0xFF7F1D1D);
-graphics.fill(pX + 3, headY + 10, pX + 7, headY + 13, 0xFFFFFFFF);
-graphics.fill(pX + 4, headY + 10, pX + 6, headY + 13, 0xFF7F1D1D);
+boxes.add(new VoxelBox(px - 0.14, 1.92, -0.30, 0.12, 0.10, 0.04, 0xFF7F1D1D));
+boxes.add(new VoxelBox(px + 0.14, 1.92, -0.30, 0.12, 0.10, 0.04, 0xFF7F1D1D));
 
-// 5. Рога
-if (hornsIndex > 0) {
-int hColor = hornsIndex == 1 ? 0xFFEF4444 : (hornsIndex == 2 ? 0xFFD97706 : 0xFF38BDF8);
-graphics.fill(pX - 12, headY - 7, pX - 8, headY, hColor);
-graphics.fill(pX - 14, headY - 10, pX - 10, headY - 6, hColor);
-graphics.fill(pX + 8, headY - 7, pX + 12, headY, hColor);
-graphics.fill(pX + 10, headY - 10, pX + 14, headY - 6, hColor);
+// 3D-Крылья
+if (wingsIndex > 0) {
+int wCol = switch (wingsIndex) {
+case 1 -> 0xFFF8FAFC;
+case 2 -> 0xFFDC2626;
+case 3 -> 0xFF06B6D4;
+default -> 0xFFA855F7;
+};
+int wTip = switch (wingsIndex) {
+case 1 -> 0xFFBAE6FD;
+case 2 -> 0xFF7F1D1D;
+case 3 -> 0xFF67E8F9;
+default -> 0xFFE879F9;
+};
+boxes.add(new VoxelBox(px - 0.68, 1.38 + bob * 0.5, 0.28, 0.72, 0.64, 0.08, wCol));
+boxes.add(new VoxelBox(px - 1.05, 1.56 + bob * 0.5, 0.36, 0.32, 0.42, 0.08, wTip));
+boxes.add(new VoxelBox(px + 0.68, 1.38 + bob * 0.5, 0.28, 0.72, 0.64, 0.08, wCol));
+boxes.add(new VoxelBox(px + 1.05, 1.56 + bob * 0.5, 0.36, 0.32, 0.42, 0.08, wTip));
 }
 
-// 6. Шляпка / Ушки
+// 3D-Рога / Нимб
+if (hornsIndex == 4) {
+boxes.add(new VoxelBox(px, 2.52 + bob, 0.0, 0.68, 0.08, 0.68, 0xFFFACC15));
+} else if (hornsIndex > 0) {
+int hCol = hornsIndex == 1 ? 0xFFEF4444 : (hornsIndex == 2 ? 0xFFD97706 : 0xFF38BDF8);
+boxes.add(new VoxelBox(px - 0.30, 2.38, -0.05, 0.12, 0.32, 0.12, hCol));
+boxes.add(new VoxelBox(px + 0.30, 2.38, -0.05, 0.12, 0.32, 0.12, hCol));
+}
+
+// 3D-Шляпка / Ушки
 if (hatsIndex == 1) {
-graphics.fill(pX - 8, headY - 5, pX + 8, headY, 0xFFFACC15);
-graphics.fill(pX - 8, headY - 8, pX - 5, headY - 5, 0xFFFACC15);
-graphics.fill(pX - 1, headY - 9, pX + 2, headY - 5, 0xFFFACC15);
-graphics.fill(pX + 5, headY - 8, pX + 8, headY - 5, 0xFFFACC15);
+boxes.add(new VoxelBox(px, 2.32, 0.0, 0.54, 0.18, 0.54, 0xFFFACC15));
 } else if (hatsIndex == 2) {
-graphics.fill(pX - 11, headY - 6, pX - 4, headY, 0xFF94A3B8);
-graphics.fill(pX - 9, headY - 4, pX - 6, headY, 0xFFF472B6);
-graphics.fill(pX + 4, headY - 6, pX + 11, headY, 0xFF94A3B8);
-graphics.fill(pX + 6, headY - 4, pX + 9, headY, 0xFFF472B6);
+boxes.add(new VoxelBox(px - 0.22, 2.34, 0.0, 0.22, 0.24, 0.10, 0xFFF472B6));
+boxes.add(new VoxelBox(px + 0.22, 2.34, 0.0, 0.22, 0.24, 0.10, 0xFFF472B6));
 } else if (hatsIndex == 3) {
-graphics.fill(pX - 11, headY - 3, pX + 11, headY, 0xFF0F172A);
-graphics.fill(pX - 7, headY - 13, pX + 7, headY - 3, 0xFF1E293B);
-graphics.fill(pX - 7, headY - 5, pX + 7, headY - 3, currentTheme.accent);
+boxes.add(new VoxelBox(px, 2.28, 0.0, 0.72, 0.08, 0.72, 0xFF0F172A));
+boxes.add(new VoxelBox(px, 2.52, 0.0, 0.46, 0.42, 0.46, 0xFF1E293B));
+} else if (hatsIndex == 4) {
+boxes.add(new VoxelBox(px - 0.34, 1.96, 0.0, 0.12, 0.28, 0.26, currentTheme.accent));
+boxes.add(new VoxelBox(px + 0.34, 1.96, 0.0, 0.12, 0.28, 0.26, currentTheme.accent));
+boxes.add(new VoxelBox(px, 2.28, 0.0, 0.68, 0.08, 0.12, currentTheme.accent));
 }
 
-// --- Детализированный спутник Вадимка справа на сцене ---
-int petX = stageX + 104;
-int petY = podY - 16 + floatOffset;
+// --- 3D МОДЕЛЬ ВАДИМКИ (справа на подиуме, x = +0.92) ---
+double vx = 0.92;
+switch (currentForm) {
+case RAT -> {
+// Крыска: серое тело, мордочка, розовые ушки и хвостик
+boxes.add(new VoxelBox(vx, 0.24, 0.05, 0.46, 0.34, 0.62, 0xFF94A3B8));
+boxes.add(new VoxelBox(vx, 0.26, -0.34, 0.34, 0.26, 0.32, 0xFFCBD5E1));
+boxes.add(new VoxelBox(vx, 0.24, -0.52, 0.12, 0.10, 0.08, 0xFFF472B6));
+boxes.add(new VoxelBox(vx - 0.18, 0.46, -0.22, 0.18, 0.20, 0.08, 0xFFF472B6));
+boxes.add(new VoxelBox(vx + 0.18, 0.46, -0.22, 0.18, 0.20, 0.08, 0xFFF472B6));
+boxes.add(new VoxelBox(vx, 0.14, 0.56, 0.10, 0.08, 0.48, 0xFFF9A8D4));
+}
+case WARDEN -> {
+// Мини-Хранитель со скалковыми рогами и светящейся грудью
+boxes.add(new VoxelBox(vx - 0.16, 0.30, 0.0, 0.22, 0.56, 0.24, 0xFF0F3D3E));
+boxes.add(new VoxelBox(vx + 0.16, 0.30, 0.0, 0.22, 0.56, 0.24, 0xFF0F3D3E));
+boxes.add(new VoxelBox(vx, 0.88, 0.0, 0.64, 0.68, 0.38, 0xFF0D4F4F));
+boxes.add(new VoxelBox(vx, 0.88, -0.20, 0.34, 0.30, 0.06, 0xFF2DD4BF));
+boxes.add(new VoxelBox(vx, 1.44, 0.0, 0.54, 0.46, 0.44, 0xFF115E59));
+boxes.add(new VoxelBox(vx - 0.36, 1.56, 0.0, 0.20, 0.32, 0.10, 0xFF2DD4BF));
+boxes.add(new VoxelBox(vx + 0.36, 1.56, 0.0, 0.20, 0.32, 0.10, 0xFF2DD4BF));
+}
+case BREEZE -> {
+// Вихрь с воздушным кольцом
+boxes.add(new VoxelBox(vx, 0.45 + bob, 0.0, 0.58, 0.22, 0.58, 0xFFC7D2FE));
+boxes.add(new VoxelBox(vx, 0.86 + bob, 0.0, 0.30, 0.54, 0.30, 0xFF6366F1));
+boxes.add(new VoxelBox(vx, 1.32 + bob, 0.0, 0.48, 0.44, 0.48, 0xFF818CF8));
+boxes.add(new VoxelBox(vx, 1.42 + bob, -0.25, 0.42, 0.12, 0.06, 0xFFFDE047));
+}
+case AXOLOTL -> {
+// Синий Аксолотль
+boxes.add(new VoxelBox(vx, 0.24, 0.08, 0.44, 0.26, 0.66, 0xFF60A5FA));
+boxes.add(new VoxelBox(vx, 0.28, -0.34, 0.46, 0.28, 0.34, 0xFF93C5FD));
+boxes.add(new VoxelBox(vx - 0.32, 0.32, -0.30, 0.22, 0.24, 0.08, 0xFFF472B6));
+boxes.add(new VoxelBox(vx + 0.32, 0.32, -0.30, 0.22, 0.24, 0.08, 0xFFF472B6));
+boxes.add(new VoxelBox(vx, 0.22, 0.62, 0.10, 0.22, 0.46, 0xFF3B82F6));
+}
+default -> {
+// Allay / Мини-игрок (парящий спутник с крыльями)
+boxes.add(new VoxelBox(vx, 0.78 + bob, 0.0, 0.32, 0.42, 0.24, currentForm.primaryColor));
+boxes.add(new VoxelBox(vx, 1.20 + bob, 0.0, 0.42, 0.42, 0.42, currentForm.accentColor));
+boxes.add(new VoxelBox(vx - 0.38, 0.88 + bob, 0.16, 0.42, 0.28, 0.06, 0xFFE0F2FE));
+boxes.add(new VoxelBox(vx + 0.38, 0.88 + bob, 0.16, 0.42, 0.28, 0.06, 0xFFE0F2FE));
+}
+}
 
-if (currentForm == VadimkaForm.RAT) {
-int ratY = podY - 4;
-// Тельце Крыски, ушки, глазки, усики и длинный хвостик
-graphics.fill(petX - 12, ratY - 12, petX + 10, ratY + 4, 0xFF94A3B8);
-graphics.fill(petX - 14, ratY - 8, petX - 10, ratY + 2, 0xFFCBD5E1);
-graphics.fill(petX - 10, ratY - 18, petX - 3, ratY - 12, 0xFFF472B6);
-graphics.fill(petX + 1, ratY - 18, petX + 8, ratY - 12, 0xFFF472B6);
-graphics.fill(petX - 11, ratY - 8, petX - 8, ratY - 5, 0xFF0F172A);
-graphics.fill(petX - 15, ratY - 4, petX - 13, ratY - 2, 0xFFF472B6);
-graphics.fill(petX + 10, ratY, petX + 18, ratY + 2, 0xFFF9A8D4);
-graphics.fill(petX + 18, ratY - 3, petX + 23, ratY, 0xFFF9A8D4);
-} else if (currentForm == VadimkaForm.WARDEN) {
-graphics.fill(petX - 12, petY - 26, petX + 12, petY + 6, 0xFF0F766E);
-graphics.fill(petX - 16, petY - 32, petX - 10, petY - 22, 0xFF2DD4BF);
-graphics.fill(petX + 10, petY - 32, petX + 16, petY - 22, 0xFF2DD4BF);
-graphics.fill(petX - 6, petY - 14, petX + 6, petY - 4, 0xFF115E59);
-graphics.fill(petX - 4, petY - 12, petX + 4, petY - 6, 0xFF5EEAD4);
+return boxes;
+}
+
+// =====================================================================
+// ОТРИСОВКА 3 ИГРАБЕЛЬНЫХ AFK МИНИ-ИГР В 8-Й ВКЛАДКЕ
+// =====================================================================
+
+private void renderAfkGameCanvas(GuiGraphics g, int gx, int gy, int gw, int gh) {
+fillRoundedRect(g, gx, gy, gw, gh, 0xFF070C12);
+drawRoundedBorder(g, gx, gy, gw, gh, currentTheme.accent);
+String hdr = selectedAfkGame.title + " | Счёт: " + afkScore + " Рекорд: " + afkBestScore;
+g.drawString(this.font, trimText(this.font, hdr, gw - 12), gx + 6, gy + 5, 0xFFFDE047);
+
+int ax = gx + 6;
+int ay = gy + 18;
+int aw = gw - 12;
+int ah = gh - 24;
+g.fill(ax, ay, ax + aw, ay + ah, 0xFF0D1520);
+
+switch (selectedAfkGame) {
+case RUNNER -> {
+int laneW = aw / 3;
+for (int l = 0; l < 3; l++) {
+g.fill(ax + l * laneW + 2, ay + 2, ax + (l + 1) * laneW - 2, ay + ah - 2, 0x18FFFFFF);
+}
+for (int[] it : runnerItems) {
+int ix = ax + it[0] * laneW + laneW / 2 - 6;
+int iy = ay + (it[1] * (ah - 14)) / 100;
+if (it[2] == 1) {
+g.fill(ix + 2, iy, ix + 10, iy + 10, 0xFF10B981);
 } else {
-// Allay / Breeze / Axolotl / Player mini
-graphics.fill(petX - 9, petY - 20, petX + 9, petY + 2, currentForm.primaryColor);
-graphics.fill(petX - 16, petY - 16, petX - 9, petY - 6, currentForm.accentColor);
-graphics.fill(petX + 9, petY - 16, petX + 16, petY - 6, currentForm.accentColor);
-graphics.fill(petX - 5, petY - 14, petX - 2, petY - 10, 0xFFFFFFFF);
-graphics.fill(petX + 2, petY - 14, petX + 5, petY - 10, 0xFFFFFFFF);
+g.fill(ix, iy, ix + 12, iy + 12, 0xFF22C55E);
+g.fill(ix + 2, iy + 3, ix + 4, iy + 5, 0xFF000000);
+g.fill(ix + 8, iy + 3, ix + 10, iy + 5, 0xFF000000);
 }
-
-// Информация под сценой
-int infoY = stageY + stageH + 6;
-graphics.drawString(this.font, "В мире: " + (companionVisibleInWorld ? "АКТИВЕН" : "СКРЫТ"), px + 8, infoY, companionVisibleInWorld ? 0xFF4ADE80 : 0xFFF87171);
-graphics.drawString(this.font, "Облик: " + currentForm.shortName, px + 8, infoY + 12, currentForm.accentColor);
-graphics.drawString(this.font, "Крылья: " + WINGS_OPTIONS.get(wingsIndex), px + 8, infoY + 26, 0xFFE2E8F0);
-graphics.drawString(this.font, "Рога: " + HORNS_OPTIONS.get(hornsIndex), px + 8, infoY + 37, 0xFFE2E8F0);
-graphics.drawString(this.font, "Шляпка: " + HATS_OPTIONS.get(hatsIndex), px + 8, infoY + 48, 0xFFE2E8F0);
-graphics.drawString(this.font, "Одежда: " + OUTFIT_OPTIONS.get(outfitIndex), px + 8, infoY + 59, 0xFFE2E8F0);
+}
+int plX = ax + runnerLane * laneW + laneW / 2 - 6;
+int plY = ay + ah - 18;
+g.fill(plX, plY, plX + 12, plY + 12, currentTheme.secondary);
+}
+case SONIC -> {
+int groundY = ay + ah - 14;
+g.fill(ax, groundY, ax + aw, ay + ah, 0xFF166534);
+g.fill(ax, groundY, ax + aw, groundY + 3, 0xFF22C55E);
+int plX = ax + (18 * aw) / 100;
+int plY = groundY - 12 - (int) (sonicY * 1.4);
+g.fill(plX, plY, plX + 12, plY + 12, 0xFF38BDF8);
+for (int[] ob : sonicObstacles) {
+int ox = ax + (ob[0] * aw) / 100;
+if (ob[1] == 1) {
+g.fill(ox, groundY - 28, ox + 8, groundY - 20, 0xFFFACC15);
+} else {
+g.fill(ox, groundY - 14, ox + 8, groundY, 0xFFEF4444);
+}
+}
+}
+case DOOM -> {
+int plX = ax + (doomPlayerX * aw) / 100 - 6;
+int plY = ay + ah - 16;
+g.fill(plX, plY, plX + 12, plY + 10, currentTheme.secondary);
+g.fill(plX + 4, plY - 4, plX + 8, plY, currentTheme.accent);
+for (int[] b : doomBullets) {
+int bx = ax + (b[0] * aw) / 100 - 1;
+int by = ay + (b[1] * ah) / 100;
+g.fill(bx, by, bx + 3, by + 6, 0xFFFDE047);
+}
+for (int[] e : doomEnemies) {
+int ex = ax + (e[0] * aw) / 100 - 6;
+int ey = ay + (e[1] * ah) / 100;
+g.fill(ex, ey, ex + 12, ey + 12, 0xFFF43F5E);
+g.fill(ex + 2, ey + 3, ex + 5, ey + 6, 0xFFFFFFFF);
+g.fill(ex + 7, ey + 3, ex + 10, ey + 6, 0xFFFFFFFF);
+}
+}
+}
 }
 }
 }
